@@ -1,8 +1,24 @@
 import { BrowserWindow } from 'electron'
 
+// Virtual print drivers prompt for a file path, which must never happen mid-sale.
+const VIRTUAL_PRINTER = /print to pdf|xps document writer|onenote|send to|fax/i
+
+function doPrint(
+  win: BrowserWindow,
+  options: Electron.WebContentsPrintOptions
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    win.webContents.print(
+      { printBackground: true, margins: { marginType: 'none' }, ...options },
+      (success) => resolve(success)
+    )
+  })
+}
+
 /**
- * Print an HTML document. Receipts print silently to the default printer;
- * if silent printing fails (e.g. no default printer) we fall back to the dialog.
+ * Print an HTML document. Receipts print silently to a real (non-virtual)
+ * printer — preferring the OS default — so completing a sale never pops a
+ * "save as file" prompt. Pass silent: false to show the system print dialog.
  */
 export async function printHtml(input: { html: string; silent?: boolean }): Promise<{ printed: boolean }> {
   const win = new BrowserWindow({
@@ -11,22 +27,21 @@ export async function printHtml(input: { html: string; silent?: boolean }): Prom
   })
   try {
     await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(input.html))
-    const printed = await new Promise<boolean>((resolve) => {
-      win.webContents.print(
-        {
-          silent: input.silent ?? true,
-          printBackground: true,
-          margins: { marginType: 'none' },
-        },
-        (success) => resolve(success)
-      )
-    })
-    if (!printed && input.silent !== false) {
-      // Retry with the system dialog so the user can pick a printer.
-      const retried = await new Promise<boolean>((resolve) => {
-        win.webContents.print({ silent: false, printBackground: true }, (s) => resolve(s))
-      })
-      return { printed: retried }
+
+    if (input.silent === false) {
+      return { printed: await doPrint(win, { silent: false }) }
+    }
+
+    const printers = await win.webContents.getPrintersAsync()
+    const real = printers.filter((p) => !VIRTUAL_PRINTER.test(p.displayName || p.name))
+    const target = real.find((p) => p.isDefault) ?? real[0]
+    if (!target) {
+      throw new Error('no printer connected — set up a receipt printer in Windows')
+    }
+
+    const printed = await doPrint(win, { silent: true, deviceName: target.name })
+    if (!printed) {
+      throw new Error(`printer "${target.displayName || target.name}" did not accept the job`)
     }
     return { printed }
   } finally {
