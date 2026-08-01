@@ -1,26 +1,34 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
+import { useNavigate } from 'react-router-dom'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Store } from 'lucide-react'
 import { loginSchema, type LoginInput } from '../../shared/schemas'
-import { useAuth } from '../../stores/auth'
+import { getLastUsername, useAuth } from '../../stores/auth'
 import { Button, Card, Field, Input, PasswordInput } from '../../components/ui'
 import { ForgotPasswordModal } from './ForgotPasswordModal'
+import { usePreferences } from '../../stores/preferences'
 
 export function Login() {
   const login = useAuth((s) => s.login)
   const shopName = useAuth((s) => s.state?.shop?.name)
+  const startPage = usePreferences((s) => s.startPage)
+  const navigate = useNavigate()
   const [forgotOpen, setForgotOpen] = useState(false)
   const {
     register,
     handleSubmit,
     setError,
     formState: { errors, isSubmitting },
-  } = useForm<LoginInput>({ resolver: zodResolver(loginSchema) })
+  } = useForm<LoginInput>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { username: getLastUsername(), password: '' },
+  })
 
   const onSubmit = handleSubmit(async (values) => {
     try {
       await login(values)
+      navigate(startPage === 'pos' ? '/pos' : '/', { replace: true })
     } catch (e) {
       setError('password', { message: (e as Error).message })
     }

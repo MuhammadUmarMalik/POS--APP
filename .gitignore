@@ -6,6 +6,7 @@ dist/
 dist-ssr/
 dist-electron/
 release/
+*.tsbuildinfo
 
 # Logs
 logs/
@@ -30,6 +31,7 @@ pnpm-debug.log*
 !.vscode/extensions.json
 .idea/
 .DS_Store
+nul
 *.suo
 *.ntvs*
 *.njsproj
