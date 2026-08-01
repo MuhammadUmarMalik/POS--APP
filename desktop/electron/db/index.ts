@@ -397,6 +397,74 @@ CREATE TABLE sync_conflicts (
 CREATE INDEX idx_sync_conflicts_shop ON sync_conflicts(shop_id, resolution_status);
 `,
   },
+  {
+    version: 4,
+    sql: `
+-- (a) Rebuild users to add the 'manager' role.
+-- The tables referencing users are re-pointed by name automatically; the whole
+-- migration runs with foreign_keys=OFF (see migrate()) so the rebuild is safe.
+CREATE TABLE users_new (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL REFERENCES shops(id),
+  name TEXT NOT NULL,
+  username TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin','cashier','manager')),
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  UNIQUE (shop_id, username)
+);
+INSERT INTO users_new (id, shop_id, name, username, password_hash, role, active, created_at)
+  SELECT id, shop_id, name, username, password_hash, role, active, created_at FROM users;
+DROP TABLE users;
+ALTER TABLE users_new RENAME TO users;
+
+-- (b) Rebuild inventory_logs to allow stock-transfer movement types.
+CREATE TABLE inventory_logs_new (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL REFERENCES shops(id),
+  product_id TEXT NOT NULL REFERENCES products(id),
+  change_type TEXT NOT NULL CHECK (change_type IN
+    ('sale','purchase','sale_return','purchase_return','adjustment','opening','transfer_out','transfer_in')),
+  quantity_change INTEGER NOT NULL,
+  reason TEXT,
+  reference_id TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  sync_status TEXT NOT NULL DEFAULT 'pending'
+);
+INSERT INTO inventory_logs_new (id, shop_id, product_id, change_type, quantity_change, reason, reference_id, created_by, created_at, sync_status)
+  SELECT id, shop_id, product_id, change_type, quantity_change, reason, reference_id, created_by, created_at, sync_status FROM inventory_logs;
+DROP TABLE inventory_logs;
+ALTER TABLE inventory_logs_new RENAME TO inventory_logs;
+CREATE INDEX idx_invlogs_product ON inventory_logs(product_id, created_at);
+
+-- (c) Granular permissions: one row per granted permission.
+-- Admin users keep no rows — they implicitly have every permission.
+CREATE TABLE user_permissions (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL REFERENCES shops(id),
+  user_id TEXT NOT NULL REFERENCES users(id),
+  permission TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (user_id, permission)
+);
+CREATE INDEX idx_user_permissions_user ON user_permissions(user_id);
+
+-- (d) Receipt printer settings (CSS print or raw ESC/POS over TCP).
+CREATE TABLE printer_settings (
+  id TEXT PRIMARY KEY,
+  shop_id TEXT NOT NULL REFERENCES shops(id),
+  mode TEXT NOT NULL DEFAULT 'css' CHECK (mode IN ('css','escpos')),
+  host TEXT,
+  port INTEGER NOT NULL DEFAULT 9100,
+  width_mm INTEGER NOT NULL DEFAULT 80 CHECK (width_mm IN (58,80)),
+  copies INTEGER NOT NULL DEFAULT 1 CHECK (copies BETWEEN 1 AND 3),
+  updated_at TEXT NOT NULL,
+  UNIQUE (shop_id)
+);
+`,
+  },
 ]
 
 export function openDb(): DatabaseType.Database {
@@ -420,16 +488,25 @@ function migrate(d: DatabaseType.Database) {
       (r) => r.version
     )
   )
-  for (const m of MIGRATIONS) {
-    if (applied.has(m.version)) continue
-    const run = d.transaction(() => {
-      d.exec(m.sql)
-      d.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
-        m.version,
-        new Date().toISOString()
-      )
-    })
-    run()
+  const pending = MIGRATIONS.filter((m) => !applied.has(m.version))
+  if (pending.length === 0) return
+  // Table rebuilds (role CHECK, inventory_logs CHECK) require FK enforcement to
+  // be off for the duration of the run. Safe here: migrations run before any
+  // application queries, and each migration still commits in its own transaction.
+  d.pragma('foreign_keys = OFF')
+  try {
+    for (const m of pending) {
+      const run = d.transaction(() => {
+        d.exec(m.sql)
+        d.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
+          m.version,
+          new Date().toISOString()
+        )
+      })
+      run()
+    }
+  } finally {
+    d.pragma('foreign_keys = ON')
   }
 }
 

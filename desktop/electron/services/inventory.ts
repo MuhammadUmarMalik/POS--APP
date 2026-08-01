@@ -1,5 +1,5 @@
 import { getDb } from '../db'
-import { audit, writeMovement } from './helpers'
+import { audit, getStock, uid, writeMovement } from './helpers'
 import type { InventoryLog, Session } from '../../src/shared/types'
 import type { AdjustmentInput } from '../../src/shared/schemas'
 
@@ -15,6 +15,63 @@ export function adjustStock(session: Session, input: AdjustmentInput): void {
       userId: session.userId,
     })
     audit(session, 'stock.adjustment', input)
+  })()
+}
+
+/**
+ * Move quantity between two products (pack-size splits / unit corrections).
+ * The source product must have enough stock; if it is ever negative we refuse
+ * unless the current session is admin (mirrors sales.ts negative-stock rule).
+ */
+export function transferStock(
+  session: Session,
+  input: { from_product_id: string; to_product_id: string; quantity: number; note?: string }
+): void {
+  if (input.from_product_id === input.to_product_id) {
+    throw new Error('Source and target products must be different')
+  }
+  const db = getDb()
+  db.transaction(() => {
+    const products = db
+      .prepare('SELECT id, name FROM products WHERE id IN (?, ?) AND shop_id = ?')
+      .all(input.from_product_id, input.to_product_id, session.shopId) as {
+      id: string
+      name: string
+    }[]
+    if (products.length !== 2) throw new Error('Both products must exist in this shop')
+
+    const fromStock = getStock(input.from_product_id)
+    if (fromStock < input.quantity && session.role !== 'admin') {
+      throw new Error(
+        `Only ${fromStock} available to transfer from "${products.find((p) => p.id === input.from_product_id)!.name}"`
+      )
+    }
+
+    const referenceId = uid()
+    const reason = input.note
+      ? `Transfer to ${products.find((p) => p.id === input.to_product_id)!.name}: ${input.note}`
+      : `Transfer to ${products.find((p) => p.id === input.to_product_id)!.name}`
+    writeMovement({
+      shopId: session.shopId,
+      productId: input.from_product_id,
+      changeType: 'transfer_out',
+      quantityChange: -input.quantity,
+      reason,
+      referenceId,
+      userId: session.userId,
+    })
+    writeMovement({
+      shopId: session.shopId,
+      productId: input.to_product_id,
+      changeType: 'transfer_in',
+      quantityChange: input.quantity,
+      reason: `Transfer from ${products.find((p) => p.id === input.from_product_id)!.name}${
+        input.note ? `: ${input.note}` : ''
+      }`,
+      referenceId,
+      userId: session.userId,
+    })
+    audit(session, 'stock.transfer', input)
   })()
 }
 

@@ -4,9 +4,49 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>POS Desktop</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: #f8fafc; color: #0f172a; font-family: "Segoe UI", sans-serif; }
+      .startup {
+        align-items: center;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        height: 100%;
+        justify-content: center;
+      }
+      .startup__mark {
+        align-items: center;
+        background: #2563eb;
+        border-radius: 12px;
+        color: white;
+        display: flex;
+        font-size: 24px;
+        font-weight: 700;
+        height: 52px;
+        justify-content: center;
+        width: 52px;
+      }
+      .startup__title { font-size: 18px; font-weight: 600; }
+      .startup__spinner {
+        animation: startup-spin .7s linear infinite;
+        border: 3px solid #cbd5e1;
+        border-radius: 999px;
+        border-top-color: #2563eb;
+        height: 22px;
+        width: 22px;
+      }
+      @keyframes startup-spin { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="startup" role="status" aria-live="polite">
+        <div class="startup__mark">P</div>
+        <div class="startup__title">Starting POS Desktop…</div>
+        <div class="startup__spinner" aria-hidden="true"></div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

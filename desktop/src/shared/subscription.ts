@@ -31,9 +31,6 @@ export const canCreatePurchase = (status: SubscriptionStatus): boolean =>
 // Old data, reports, export and backup stay available no matter what.
 export const canAccessReports = (_status: SubscriptionStatus): boolean => true
 
-export const shouldShowTrialBanner = (status: SubscriptionStatus): boolean =>
-  status === 'trial_active'
-
 export const shouldLockSales = (status: SubscriptionStatus): boolean =>
   !FULL_ACCESS.includes(status)
 

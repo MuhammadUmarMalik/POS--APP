@@ -197,8 +197,8 @@ const routes: Record<string, Route> = {
   },
 
   // ---- reports ----
-  'reports:dashboard': { access: 'user', handler: (_p, s) => reports.dashboard(s) },
-  'reports:sales': { access: 'user', schema: rangeSchema, handler: (p, s) => reports.salesReport(s, p) },
+  'reports:dashboard': { access: 'admin', handler: (_p, s) => reports.dashboard(s) },
+  'reports:sales': { access: 'admin', schema: rangeSchema, handler: (p, s) => reports.salesReport(s, p) },
   'reports:profitLoss': { access: 'admin', schema: rangeSchema, handler: (p, s) => reports.profitLoss(s, p) },
   'reports:dues': { access: 'admin', handler: (_p, s) => reports.duesReport(s) },
   'reports:expenses': { access: 'admin', schema: rangeSchema, handler: (p, s) => expenses.expenseReport(s, p) },

@@ -23,6 +23,8 @@ let win: BrowserWindow | null
 function createWindow() {
   win = new BrowserWindow({
     title: 'POS Desktop',
+    show: false,
+    backgroundColor: '#f8fafc',
     width: 1400,
     height: 900,
     minWidth: 1100,
@@ -34,7 +36,13 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
-  win.maximize()
+
+  // Do not expose Chromium's blank surface. Show the window only after the
+  // renderer has produced its first frame (the inline startup screen or React).
+  win.once('ready-to-show', () => {
+    win?.maximize()
+    win?.show()
+  })
 
   if (VITE_DEV_SERVER_URL) {
     win.loadURL(VITE_DEV_SERVER_URL)
