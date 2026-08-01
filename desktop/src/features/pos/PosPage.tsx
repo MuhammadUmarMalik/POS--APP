@@ -4,8 +4,8 @@ import { Minus, PauseCircle, Plus, ScanBarcode, Trash2, X } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { formatMoney, toPaisa } from '../../lib/money'
 import { useAuth, useCurrency, useSession } from '../../stores/auth'
-import type { Category, HeldCartLine, HeldSale, ProductWithStock, Sale, SaleItem } from '../../shared/types'
-import { Badge, Button, Card, Input } from '../../components/ui'
+import type { HeldCartLine, HeldSale, ProductWithStock, Sale, SaleItem } from '../../shared/types'
+import { Badge, Button, Card, Input, Spinner } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
 import { stockTone } from '../products/ProductsPage'
 import { PaymentModal } from './PaymentModal'
@@ -31,24 +31,32 @@ export function PosPage() {
   const shop = useAuth((s) => s.state?.shop)
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
-  const [categoryId, setCategoryId] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const [cart, setCart] = useState<CartLine[]>([])
   const [billDiscount, setBillDiscount] = useState('')
   const [payOpen, setPayOpen] = useState(false)
   const [heldOpen, setHeldOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
+  const searchTerm = search.trim()
 
-  const { data: products } = useQuery({
-    queryKey: ['pos-products', search, categoryId],
+  // A short delay prevents fast barcode scans from rendering a product list;
+  // scanners finish with Enter and add the exact match directly to the cart.
+  useEffect(() => {
+    if (!searchTerm) {
+      setSearchQuery('')
+      return
+    }
+    const timer = window.setTimeout(() => setSearchQuery(searchTerm), 180)
+    return () => window.clearTimeout(timer)
+  }, [searchTerm])
+
+  const { data: products, isFetching: isSearching } = useQuery({
+    queryKey: ['pos-products', searchQuery],
     queryFn: () =>
       api<ProductWithStock[]>('products:list', {
-        search: search || undefined,
-        category_id: categoryId || undefined,
+        search: searchQuery,
       }),
-  })
-  const { data: categories } = useQuery({
-    queryKey: ['categories'],
-    queryFn: () => api<Category[]>('categories:list'),
+    enabled: searchQuery.length > 0,
   })
   const { data: heldSales } = useQuery({
     queryKey: ['held-sales'],
@@ -77,7 +85,7 @@ export function PosPage() {
 
   // Barcode scanners act as keyboards ending with Enter — the search box is the scan target.
   const onSearchEnter = async () => {
-    const code = search.trim()
+    const code = searchTerm
     if (!code) return
     try {
       const p = await api<ProductWithStock | null>('products:byBarcode', { barcode: code })
@@ -89,11 +97,20 @@ export function PosPage() {
     } catch {
       /* fall through to plain search */
     }
-    // Not a barcode — if exactly one match, add it.
-    if (products?.length === 1) {
-      addToCart(products[0])
+    // Not a barcode — Enter still adds a unique name/SKU match.
+    const matches = searchQuery === code && products
+      ? products
+      : await api<ProductWithStock[]>('products:list', { search: code })
+    if (matches.length === 1) {
+      addToCart(matches[0])
       setSearch('')
     }
+  }
+
+  const addSearchResult = (product: ProductWithStock) => {
+    addToCart(product)
+    setSearch('')
+    searchRef.current?.focus()
   }
 
   const setQty = (productId: string, qty: number) => {
@@ -223,22 +240,21 @@ export function PosPage() {
             </Button>
           </div>
         </div>
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          <CategoryChip active={categoryId === ''} onClick={() => setCategoryId('')} label="All" />
-          {categories?.map((c) => (
-            <CategoryChip
-              key={c.id}
-              active={categoryId === c.id}
-              onClick={() => setCategoryId(c.id)}
-              label={c.name}
-            />
-          ))}
-        </div>
         <div className="grid flex-1 auto-rows-min grid-cols-2 gap-2 overflow-y-auto pb-4 md:grid-cols-3 xl:grid-cols-4">
-          {products?.map((p) => (
+          {!searchTerm ? (
+            <div className="col-span-full flex h-full min-h-80 flex-col items-center justify-center text-center text-muted">
+              <ScanBarcode size={34} className="mb-3 text-primary" />
+              <p className="font-medium text-ink">Search or scan to add a product</p>
+              <p className="mt-1 max-w-sm text-sm">
+                Type a product name above to see matching products, or scan a barcode to add it directly to the cart.
+              </p>
+            </div>
+          ) : searchQuery !== searchTerm || isSearching ? (
+            <div className="col-span-full"><Spinner /></div>
+          ) : products?.map((p) => (
             <button
               key={p.id}
-              onClick={() => addToCart(p)}
+              onClick={() => addSearchResult(p)}
               className="flex flex-col items-start rounded-lg border border-line bg-surface p-3 text-left transition hover:border-primary hover:shadow-sm"
             >
               {p.image && (
@@ -255,9 +271,9 @@ export function PosPage() {
               <Badge tone={stockTone(p)}>{p.stock} {p.unit}</Badge>
             </button>
           ))}
-          {products?.length === 0 && (
+          {searchQuery === searchTerm && !isSearching && products?.length === 0 ? (
             <div className="col-span-full py-12 text-center text-muted">No products match.</div>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -276,7 +292,7 @@ export function PosPage() {
         <div className="flex-1 overflow-y-auto">
           {cart.length === 0 ? (
             <div className="flex h-full items-center justify-center p-8 text-center text-muted">
-              Scan a barcode or tap a product to start the sale.
+              Scan a barcode or search and select a product to start the sale.
             </div>
           ) : (
             cart.map((l) => {
@@ -379,20 +395,5 @@ export function PosPage() {
         onCompleted={onCompleted}
       />
     </div>
-  )
-}
-
-function CategoryChip({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      onClick={onClick}
-      className={
-        active
-          ? 'rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-white'
-          : 'rounded-full border border-line bg-surface px-3 py-1.5 text-xs font-medium text-muted hover:border-primary hover:text-primary'
-      }
-    >
-      {label}
-    </button>
   )
 }
