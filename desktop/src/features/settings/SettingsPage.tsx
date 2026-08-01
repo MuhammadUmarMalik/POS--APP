@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus, Printer, SlidersHorizontal, ShieldCheck, Users as UsersIcon, UserX, UserCheck } from 'lucide-react'
+import { KeyRound, Plus, Printer, ShieldCheck, Users as UsersIcon, UserX, UserCheck } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { useSession } from '../../stores/auth'
 import type { User } from '../../shared/types'
@@ -14,6 +14,7 @@ import { ShopProfileSettings } from './components/ShopProfileSettings'
 import { SubscriptionStatusCard } from './components/SubscriptionStatusCard'
 import { CloudSyncSettings } from './components/CloudSyncSettings'
 import { PlaceholderSettingsCard } from './components/PlaceholderSettingsCard'
+import { AppPreferencesSettings } from './components/AppPreferencesSettings'
 
 export function SettingsPage() {
   return (
@@ -27,11 +28,7 @@ export function SettingsPage() {
         icon={<Printer size={18} />}
       />
       <UsersSection />
-      <PlaceholderSettingsCard
-        title="App Preferences"
-        description="Language, theme and other application preferences"
-        icon={<SlidersHorizontal size={18} />}
-      />
+      <AppPreferencesSettings />
       <SecuritySection />
     </SettingsLayout>
   )

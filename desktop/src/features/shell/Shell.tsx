@@ -8,6 +8,7 @@ import { useAuth, useSession } from '../../stores/auth'
 import { cn } from '../../lib/utils'
 import { Toaster } from '../../components/ui/toast'
 import { ProfileModal } from '../auth/ProfileModal'
+import { usePreferences } from '../../stores/preferences'
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -29,6 +30,7 @@ export function Shell() {
   const shop = useAuth((s) => s.state?.shop)
   const logout = useAuth((s) => s.logout)
   const navigate = useNavigate()
+  const navigationDensity = usePreferences((s) => s.navigationDensity)
   const [profileOpen, setProfileOpen] = useState(false)
 
   useEffect(() => {
@@ -64,7 +66,8 @@ export function Shell() {
               end={n.end}
               className={({ isActive }) =>
                 cn(
-                  'mb-0.5 flex items-center gap-3 rounded-md px-3 py-2.5 font-medium',
+                  'mb-0.5 flex items-center gap-3 rounded-md px-3 font-medium',
+                  navigationDensity === 'compact' ? 'py-1.5' : 'py-2.5',
                   isActive ? 'bg-primary text-white' : 'text-muted hover:bg-slate-100 hover:text-ink'
                 )
               }
