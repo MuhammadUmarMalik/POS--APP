@@ -1,7 +1,9 @@
 // Shared between electron main and renderer. All money fields are integer paisa.
 import type { PlanType, SubscriptionStatus } from './subscription'
+import type { Role } from './permissions'
 
-export type Role = 'admin' | 'cashier'
+export type { Role }
+export type PermissionKey = import('./permissions').PermissionKey
 
 export interface Session {
   userId: string
@@ -38,6 +40,8 @@ export interface User {
   role: Role
   active: number
   created_at: string
+  /** Granted permissions — present on users:list so the admin UI can render the matrix. */
+  permissions?: PermissionKey[]
 }
 
 export interface Category {
@@ -253,6 +257,17 @@ export interface Expense {
   expense_date: string
   created_by_name?: string | null
   created_at: string
+}
+
+// ---- printer / receipt ----
+export type PrinterMode = 'css' | 'escpos'
+
+export interface PrinterSettings {
+  mode: PrinterMode
+  host: string | null
+  port: number
+  width_mm: 58 | 80
+  copies: number
 }
 
 export interface LedgerEntry {

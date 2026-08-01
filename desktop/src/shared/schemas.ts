@@ -1,5 +1,6 @@
 // Zod schemas shared by renderer forms and main-process IPC validation.
 import { z } from 'zod'
+import { PERMISSIONS, ROLES } from './permissions'
 
 export const money = z.number().int().min(0) // paisa
 export const uuid = z.string().min(1)
@@ -131,9 +132,29 @@ export const userCreateSchema = z.object({
   name: z.string().trim().min(1, 'Name is required'),
   username: z.string().trim().min(3, 'Min 3 characters'),
   password: z.string().min(4, 'Min 4 characters'),
-  role: z.enum(['admin', 'cashier']),
+  role: z.enum(ROLES),
 })
 export type UserCreateInput = z.infer<typeof userCreateSchema>
+
+export const userPermissionsUpdateSchema = z.object({
+  user_id: uuid,
+  permissions: z.array(z.enum(PERMISSIONS)).default([]),
+})
+export type UserPermissionsUpdateInput = z.infer<typeof userPermissionsUpdateSchema>
+
+export const printerSettingsSchema = z.object({
+  mode: z.enum(['css', 'escpos']),
+  host: z
+    .string().trim()
+    .regex(/^([a-zA-Z0-9.\-]+|\d{1,3}(\.\d{1,3}){3})$/, 'Enter a valid host or IP')
+    .nullable()
+    .optional()
+    .transform((v) => (v ? v : null)),
+  port: z.number().int().min(1).max(65535).default(9100),
+  width_mm: z.union([z.literal(58), z.literal(80)]).default(80),
+  copies: z.number().int().min(1).max(3).default(1),
+})
+export type PrinterSettingsInput = z.infer<typeof printerSettingsSchema>
 
 export const changePasswordSchema = z.object({
   current_password: z.string().min(1, 'Current password is required'),
