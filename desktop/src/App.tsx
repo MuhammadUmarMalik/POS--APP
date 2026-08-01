@@ -5,6 +5,7 @@ import { Spinner } from './components/ui'
 import { Toaster } from './components/ui/toast'
 import { SetupWizard } from './features/auth/SetupWizard'
 import { Login } from './features/auth/Login'
+import { usePreferences } from './stores/preferences'
 
 const Shell = lazy(() => import('./features/shell/Shell').then((m) => ({ default: m.Shell })))
 const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })))
@@ -36,10 +37,15 @@ export default function App() {
   const startupError = useAuth((s) => s.startupError)
   const state = useAuth((s) => s.state)
   const init = useAuth((s) => s.init)
+  const reduceMotion = usePreferences((s) => s.reduceMotion)
 
   useEffect(() => {
     void init()
   }, [init])
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('reduce-motion', reduceMotion)
+  }, [reduceMotion])
 
   if (!loaded) return <Spinner />
   if (startupError) {
