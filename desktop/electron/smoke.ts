@@ -288,6 +288,9 @@ export async function runSmokeTest(): Promise<number> {
   // Dashboard exposes operations only; financial figures stay in admin reports.
   const dash2 = reports.dashboard(admin)
   check('dashboard overview has low-stock operations', Array.isArray(dash2.lowStock))
+  check('dashboard stock-health totals cover products',
+    dash2.stockHealth.total === dash2.stockHealth.healthy + dash2.stockHealth.low + dash2.stockHealth.out)
+  check('dashboard category distribution is available', Array.isArray(dash2.categories))
   check('dashboard response excludes financial totals',
     !('sales' in dash2) && !('todayProfit' in dash2) && !('monthProfit' in dash2))
   const custRep = reports.customerReport(admin, range)
