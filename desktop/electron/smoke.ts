@@ -285,10 +285,11 @@ export async function runSmokeTest(): Promise<number> {
   check('supplier ledger ends at due', supLedger[supLedger.length - 1].balance ===
     parties.listSuppliers(admin).find((s) => s.id === sup.id)!.due_balance, supLedger[supLedger.length - 1])
 
-  // Reports: dashboard extras + customer/supplier reports
+  // Dashboard exposes operations only; financial figures stay in admin reports.
   const dash2 = reports.dashboard(admin)
-  check('dashboard month totals present', typeof dash2.month.total === 'number')
-  check('dashboard admin profit present', typeof dash2.todayProfit === 'number')
+  check('dashboard overview has low-stock operations', Array.isArray(dash2.lowStock))
+  check('dashboard response excludes financial totals',
+    !('sales' in dash2) && !('todayProfit' in dash2) && !('monthProfit' in dash2))
   const custRep = reports.customerReport(admin, range)
   check('customer report rows', custRep.rows.length >= 1)
   const supRep = reports.supplierReport(admin, range)

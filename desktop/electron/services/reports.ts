@@ -109,84 +109,7 @@ export function duesReport(session: Session) {
   return { customers, suppliers }
 }
 
-/** Revenue − COGS for a range (profit before expenses). Cashiers never see this. */
-function grossProfitFor(session: Session, range: DateRange): number {
-  const db = getDb()
-  const revenue = db
-    .prepare('SELECT COALESCE(SUM(total),0) AS v FROM sales WHERE shop_id = ? AND created_at >= ? AND created_at <= ?')
-    .get(session.shopId, range.from, range.to) as { v: number }
-  const refunds = db
-    .prepare(
-      "SELECT COALESCE(SUM(refund_amount),0) AS v FROM returns WHERE shop_id = ? AND kind = 'sale' AND created_at >= ? AND created_at <= ?"
-    )
-    .get(session.shopId, range.from, range.to) as { v: number }
-  const cogs = db
-    .prepare(
-      `SELECT COALESCE(SUM(si.cost_price * (si.quantity - si.returned_quantity)),0) AS v
-       FROM sale_items si JOIN sales s ON s.id = si.sale_id
-       WHERE s.shop_id = ? AND s.created_at >= ? AND s.created_at <= ?`
-    )
-    .get(session.shopId, range.from, range.to) as { v: number }
-  return revenue.v - refunds.v - cogs.v
-}
-
-/** Last 7 local days of sales (zero-filled), cashier-scoped for cashiers. */
-function weekSeries(session: Session): { day: string; total: number; count: number }[] {
-  const db = getDb()
-  const weekStart = new Date()
-  weekStart.setDate(weekStart.getDate() - 6)
-  weekStart.setHours(0, 0, 0, 0)
-  const weekEnd = new Date()
-  weekEnd.setHours(23, 59, 59, 999)
-
-  const cashierFilter = session.role === 'cashier' ? 'AND s.cashier_id = ?' : ''
-  const params: unknown[] = [session.shopId, weekStart.toISOString(), weekEnd.toISOString()]
-  if (session.role === 'cashier') params.push(session.userId)
-
-  const rows = db
-    .prepare(
-      `SELECT strftime('%Y-%m-%d', s.created_at, 'localtime') AS day,
-              COUNT(*) AS count, COALESCE(SUM(s.total),0) AS total
-       FROM sales s
-       WHERE s.shop_id = ? AND s.created_at >= ? AND s.created_at <= ? ${cashierFilter}
-       GROUP BY day`
-    )
-    .all(...params) as { day: string; count: number; total: number }[]
-
-  const byDay = new Map(rows.map((r) => [r.day, r]))
-  const series: { day: string; total: number; count: number }[] = []
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(weekStart)
-    d.setDate(weekStart.getDate() + i)
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    const row = byDay.get(key)
-    series.push({ day: key, total: row?.total ?? 0, count: row?.count ?? 0 })
-  }
-  return series
-}
-
 export function dashboard(session: Session) {
-  const start = new Date()
-  start.setHours(0, 0, 0, 0)
-  const end = new Date()
-  end.setHours(23, 59, 59, 999)
-  const range = { from: start.toISOString(), to: end.toISOString() }
-
-  const monthStart = new Date()
-  monthStart.setDate(1)
-  monthStart.setHours(0, 0, 0, 0)
-  const monthRange = { from: monthStart.toISOString(), to: end.toISOString() }
-
-  const sales = salesReport(session, range)
-  const monthSales = salesReport(session, monthRange)
-
-  // Profit numbers are admin-only — cashiers get nulls.
-  const isAdmin = session.role === 'admin'
-  const todayProfit = isAdmin ? grossProfitFor(session, range) : null
-  const monthProfit = isAdmin
-    ? grossProfitFor(session, monthRange) - expenseTotal(session, monthRange)
-    : null
-
   const db = getDb()
   const lowStock = db
     .prepare(
@@ -199,35 +122,7 @@ export function dashboard(session: Session) {
     )
     .all(session.shopId) as { id: string; name: string; min_stock_alert: number; stock: number }[]
 
-  const dues = db
-    .prepare(
-      `SELECT
-        (SELECT COALESCE(SUM(due_balance),0) FROM customers WHERE shop_id = ? AND due_balance > 0) AS customer_dues,
-        (SELECT COALESCE(SUM(due_balance),0) FROM suppliers WHERE shop_id = ? AND due_balance > 0) AS supplier_dues`
-    )
-    .get(session.shopId, session.shopId) as { customer_dues: number; supplier_dues: number }
-
-  const recentParams: unknown[] =
-    session.role === 'cashier' ? [session.shopId, session.userId] : [session.shopId]
-  const recent = db
-    .prepare(
-      `SELECT s.id, s.invoice_number, s.total, s.payment_method, s.status, s.created_at, c.name AS customer_name
-       FROM sales s LEFT JOIN customers c ON c.id = s.customer_id
-       WHERE s.shop_id = ? ${session.role === 'cashier' ? 'AND s.cashier_id = ?' : ''}
-       ORDER BY s.created_at DESC LIMIT 8`
-    )
-    .all(...recentParams)
-
-  return {
-    sales,
-    month: { total: monthSales.totals.total, count: monthSales.totals.count },
-    todayProfit,
-    monthProfit,
-    week: weekSeries(session),
-    lowStock,
-    dues,
-    recent,
-  }
+  return { lowStock }
 }
 
 /** Sales grouped per local day or month: Daily Sales / Monthly Sales reports.
