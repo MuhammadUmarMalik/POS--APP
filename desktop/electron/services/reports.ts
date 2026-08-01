@@ -111,6 +111,36 @@ export function duesReport(session: Session) {
 
 export function dashboard(session: Session) {
   const db = getDb()
+  const stockHealth = db
+    .prepare(
+      `WITH product_stock AS (
+         SELECT p.id, p.min_stock_alert, COALESCE(SUM(il.quantity_change), 0) AS stock
+         FROM products p
+         LEFT JOIN inventory_logs il ON il.product_id = p.id
+         WHERE p.shop_id = ? AND p.is_deleted = 0
+         GROUP BY p.id
+       )
+       SELECT
+         COUNT(*) AS total,
+         COALESCE(SUM(CASE WHEN stock > min_stock_alert THEN 1 ELSE 0 END), 0) AS healthy,
+         COALESCE(SUM(CASE WHEN stock > 0 AND stock <= min_stock_alert THEN 1 ELSE 0 END), 0) AS low,
+         COALESCE(SUM(CASE WHEN stock <= 0 THEN 1 ELSE 0 END), 0) AS out
+       FROM product_stock`
+    )
+    .get(session.shopId) as { total: number; healthy: number; low: number; out: number }
+
+  const categories = db
+    .prepare(
+      `SELECT COALESCE(c.name, 'Uncategorized') AS name, COUNT(*) AS count
+       FROM products p
+       LEFT JOIN categories c ON c.id = p.category_id
+       WHERE p.shop_id = ? AND p.is_deleted = 0
+       GROUP BY p.category_id, c.name
+       ORDER BY count DESC, name COLLATE NOCASE
+       LIMIT 6`
+    )
+    .all(session.shopId) as { name: string; count: number }[]
+
   const lowStock = db
     .prepare(
       `SELECT p.id, p.name, p.min_stock_alert, COALESCE(s.stock,0) AS stock
@@ -122,7 +152,7 @@ export function dashboard(session: Session) {
     )
     .all(session.shopId) as { id: string; name: string; min_stock_alert: number; stock: number }[]
 
-  return { lowStock }
+  return { stockHealth, categories, lowStock }
 }
 
 /** Sales grouped per local day or month: Daily Sales / Monthly Sales reports.
