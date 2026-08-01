@@ -11,6 +11,7 @@ import { stockTone } from '../products/ProductsPage'
 import { PaymentModal } from './PaymentModal'
 import { HeldSalesModal } from './HeldSalesModal'
 import { receiptHtml } from '../sales/receipt'
+import { usePreferences } from '../../stores/preferences'
 
 export interface CartLine {
   product: ProductWithStock
@@ -29,6 +30,7 @@ export function PosPage() {
   const currency = useCurrency()
   const session = useSession()
   const shop = useAuth((s) => s.state?.shop)
+  const confirmCartChanges = usePreferences((s) => s.confirmCartChanges)
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
@@ -148,6 +150,11 @@ export function PosPage() {
     searchRef.current?.focus()
   }, [])
 
+  const confirmCartChange = useCallback(
+    (message: string) => !confirmCartChanges || window.confirm(message),
+    [confirmCartChanges]
+  )
+
 
   // F4 = pay, Esc = clear cart (with guard)
   useEffect(() => {
@@ -157,12 +164,12 @@ export function PosPage() {
         setPayOpen(true)
       }
       if (e.key === 'Escape' && !payOpen && cart.length > 0) {
-        if (window.confirm('Clear the current cart?')) clearCart()
+        if (confirmCartChange('Clear the current cart?')) clearCart()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cart.length, payOpen, clearCart])
+  }, [cart.length, payOpen, clearCart, confirmCartChange])
 
   const holdCart = async () => {
     if (cart.length === 0) return
@@ -181,7 +188,7 @@ export function PosPage() {
   }
 
   const resumeCart = async (lines: HeldCartLine[], label: string | null) => {
-    if (cart.length > 0 && !window.confirm('Replace the current cart with the held sale?')) return
+    if (cart.length > 0 && !confirmCartChange('Replace the current cart with the held sale?')) return
     try {
       const all = await api<ProductWithStock[]>('products:list')
       const byId = new Map(all.map((p) => [p.id, p]))
@@ -282,7 +289,7 @@ export function PosPage() {
         <div className="flex items-center justify-between border-b border-line px-4 py-3">
           <h2 className="text-lg font-semibold">Cart ({cart.length})</h2>
           {cart.length > 0 && (
-            <button onClick={() => window.confirm('Clear the current cart?') && clearCart()}
+            <button onClick={() => confirmCartChange('Clear the current cart?') && clearCart()}
               className="flex items-center gap-1 text-xs text-danger hover:underline">
               <Trash2 size={13} /> Clear
             </button>
