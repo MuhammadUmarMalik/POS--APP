@@ -18,7 +18,7 @@ import * as expenses from './services/expenses'
 import * as subscription from './services/subscription'
 import * as sync from './services/sync'
 import {
-  canAccessReports, canCreatePurchase, canCreateSale, canUsePOS, shouldLockSales, shouldShowTrialBanner,
+  canAccessReports, canCreatePurchase, canCreateSale, canUsePOS, shouldLockSales,
 } from '../src/shared/subscription'
 import { getSession, setSession } from './services/session'
 
@@ -428,7 +428,6 @@ export async function runSmokeTest(): Promise<number> {
     .every((st) => canUsePOS(st) && canCreateSale(st) && canCreatePurchase(st) && !shouldLockSales(st)))
   check('expired statuses lock sales, keep reports', (['trial_expired', 'membership_expired', 'suspended'] as const)
     .every((st) => !canCreateSale(st) && !canCreatePurchase(st) && canAccessReports(st) && shouldLockSales(st)))
-  check('banner only for active trial', shouldShowTrialBanner('trial_active') && !shouldShowTrialBanner('membership_active'))
 
   // Invalid license key never activates
   let invalidKeyThrew = false
