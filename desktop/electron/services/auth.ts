@@ -33,20 +33,27 @@ export function setup(input: SetupInput): AuthState {
   const ts = now()
   db.transaction(() => {
     db.prepare(
-      'INSERT INTO shops (id, name, currency, tax_percent, recovery_code, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(shopId, input.shopName, input.currency, input.taxPercent, randomBytes(6).toString('hex').toUpperCase(), ts, ts)
+      `INSERT INTO shops (
+         id, name, currency, tax_percent, receipt_footer, recovery_code,
+         owner_name, phone, email, address, city, business_type, ntn, strn,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      shopId, input.shopName, input.currency, input.taxPercent,
+      input.receiptFooter || 'Thank you for shopping with us!',
+      randomBytes(6).toString('hex').toUpperCase(), input.ownerName || null,
+      input.phone || null, input.email || null, input.address || null, input.city || null,
+      input.businessType || null, input.ntn || null, input.strn || null, ts, ts
+    )
     db.prepare(
       `INSERT INTO users (id, shop_id, name, username, password_hash, role, active, created_at)
        VALUES (?, ?, ?, ?, ?, 'admin', 1, ?)`
     ).run(userId, shopId, input.adminName, input.username.toLowerCase(), bcrypt.hashSync(input.password, 10), ts)
   })()
-  setSession({
-    userId,
-    name: input.adminName,
-    username: input.username.toLowerCase(),
-    role: 'admin',
-    shopId,
-  })
+  setSession(null)
+  // No auto-login: after first-time setup the user is sent to the login page.
+  // Shop + admin credentials live in the local DB (password is bcrypt-hashed),
+  // and authState() reports needsSetup=false on every launch from now on.
   return authState()
 }
 

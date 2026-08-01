@@ -52,10 +52,21 @@ export async function runSmokeTest(): Promise<number> {
   // Setup + auth
   auth.setup({
     shopName: 'Smoke Shop', currency: 'Rs', taxPercent: 0,
+    ownerName: 'Smoke Owner', phone: '0300-1234567', email: 'owner@example.com',
+    address: '1 Test Street', city: 'Lahore', businessType: 'Mini Mart',
+    ntn: '1234567-8', strn: 'STRN-123', receiptFooter: 'Come again!',
     adminName: 'Boss', username: 'boss', password: 'test1234',
   })
+  check('setup does not auto-login', getSession() === null)
+  const setupState = auth.authState()
+  check('setup persists the full shop profile',
+    !setupState.needsSetup && setupState.shop?.owner_name === 'Smoke Owner' &&
+    setupState.shop.city === 'Lahore' && setupState.shop.receipt_footer === 'Come again!')
+  const storedAdmin = getDb().prepare('SELECT password_hash FROM users WHERE username = ?').get('boss') as { password_hash: string }
+  check('setup stores a password hash, not the password', storedAdmin.password_hash !== 'test1234')
+  auth.login({ username: 'boss', password: 'test1234' })
   const admin = getSession()!
-  check('setup creates admin session', admin.role === 'admin')
+  check('login creates admin session', admin.role === 'admin')
   expectThrow('second setup blocked', () =>
     auth.setup({ shopName: 'X', currency: 'Rs', taxPercent: 0, adminName: 'x', username: 'x2', password: 'pppp' })
   )
@@ -285,10 +296,11 @@ export async function runSmokeTest(): Promise<number> {
   check('supplier ledger ends at due', supLedger[supLedger.length - 1].balance ===
     parties.listSuppliers(admin).find((s) => s.id === sup.id)!.due_balance, supLedger[supLedger.length - 1])
 
-  // Reports: dashboard extras + customer/supplier reports
+  // Dashboard exposes operations only; financial figures stay in admin reports.
   const dash2 = reports.dashboard(admin)
-  check('dashboard month totals present', typeof dash2.month.total === 'number')
-  check('dashboard admin profit present', typeof dash2.todayProfit === 'number')
+  check('dashboard overview has low-stock operations', Array.isArray(dash2.lowStock))
+  check('dashboard response excludes financial totals',
+    !('sales' in dash2) && !('todayProfit' in dash2) && !('monthProfit' in dash2))
   const custRep = reports.customerReport(admin, range)
   check('customer report rows', custRep.rows.length >= 1)
   const supRep = reports.supplierReport(admin, range)

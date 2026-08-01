@@ -6,8 +6,19 @@ export const uuid = z.string().min(1)
 
 export const setupSchema = z.object({
   shopName: z.string().trim().min(1, 'Shop name is required'),
+  ownerName: z.string().trim().max(120).optional(),
+  phone: z
+    .string().trim().regex(/^[0-9+\-\s()]{7,20}$/, 'Enter a valid phone number')
+    .optional().or(z.literal('')),
+  email: z.string().trim().email('Enter a valid email').optional().or(z.literal('')),
+  address: z.string().trim().max(300).optional(),
+  city: z.string().trim().max(80).optional(),
+  businessType: z.string().trim().max(80).optional(),
   currency: z.string().trim().min(1, 'Currency symbol is required').max(8),
   taxPercent: z.number().min(0).max(100),
+  ntn: z.string().trim().max(30).optional(),
+  strn: z.string().trim().max(30).optional(),
+  receiptFooter: z.string().trim().max(300).optional(),
   adminName: z.string().trim().min(1, 'Name is required'),
   username: z.string().trim().min(3, 'Min 3 characters'),
   password: z.string().min(4, 'Min 4 characters'),
