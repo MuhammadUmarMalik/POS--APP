@@ -95,6 +95,14 @@ export const adjustmentSchema = z.object({
 })
 export type AdjustmentInput = z.infer<typeof adjustmentSchema>
 
+export const stockTransferSchema = z.object({
+  from_product_id: uuid,
+  to_product_id: uuid,
+  quantity: z.number().int().min(1, 'Quantity must be at least 1'),
+  note: z.string().trim().max(200).optional(),
+})
+export type StockTransferInput = z.infer<typeof stockTransferSchema>
+
 export const purchaseItemInput = z.object({
   product_id: uuid,
   quantity: z.number().int().min(1),

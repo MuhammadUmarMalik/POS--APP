@@ -160,6 +160,8 @@ export type InventoryChangeType =
   | 'purchase_return'
   | 'adjustment'
   | 'opening'
+  | 'transfer_out'
+  | 'transfer_in'
 
 export interface InventoryLog {
   id: string
