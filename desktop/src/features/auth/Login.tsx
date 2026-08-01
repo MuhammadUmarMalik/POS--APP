@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Store } from 'lucide-react'
 import { loginSchema, type LoginInput } from '../../shared/schemas'
-import { useAuth } from '../../stores/auth'
+import { getLastUsername, useAuth } from '../../stores/auth'
 import { Button, Card, Field, Input, PasswordInput } from '../../components/ui'
 import { ForgotPasswordModal } from './ForgotPasswordModal'
 
@@ -16,7 +16,10 @@ export function Login() {
     handleSubmit,
     setError,
     formState: { errors, isSubmitting },
-  } = useForm<LoginInput>({ resolver: zodResolver(loginSchema) })
+  } = useForm<LoginInput>({
+    resolver: zodResolver(loginSchema),
+    defaultValues: { username: getLastUsername(), password: '' },
+  })
 
   const onSubmit = handleSubmit(async (values) => {
     try {
