@@ -10,8 +10,11 @@ import type { Purchase, PurchaseOrder, PurchaseOrderItem } from '../../shared/ty
 import {
   Button, Card, ConfirmDialog, Field, Input, Modal, PageTitle, Select, Spinner,
 } from '../../components/ui'
+import { ExportBar } from '../../components/ExportBar'
 import { toast } from '../../components/ui/toast'
 import { poStatusBadge } from './PurchasesPage'
+import { purchaseOrderHtml } from './purchaseOrder'
+import { useBatchTracking } from '../batches/useBatchSettings'
 
 export function PurchaseOrderDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -22,6 +25,11 @@ export function PurchaseOrderDetailPage() {
   const [cancelOpen, setCancelOpen] = useState(false)
   const [paid, setPaid] = useState('')
   const [method, setMethod] = useState<'cash' | 'card'>('cash')
+  const batchTracking = useBatchTracking()
+  // Keyed by purchase_order_item id — the batch is only known when the goods
+  // physically turn up, which is here rather than when the order was raised.
+  const [batches, setBatches] = useState<Record<string, { batch_number: string; expiry_date: string }>>({})
+  const batchFor = (itemId: string) => batches[itemId] ?? { batch_number: '', expiry_date: '' }
 
   const { data, isLoading } = useQuery({
     queryKey: ['purchase-order', id],
@@ -35,6 +43,17 @@ export function PurchaseOrderDetailPage() {
         id,
         paid_amount: paid === '' ? 0 : toPaisa(paid) || 0,
         method,
+        ...(batchTracking
+          ? {
+              batches: Object.entries(batches)
+                .filter(([, b]) => b.batch_number || b.expiry_date)
+                .map(([item_id, b]) => ({
+                  item_id,
+                  batch_number: b.batch_number || null,
+                  expiry_date: b.expiry_date || null,
+                })),
+            }
+          : {}),
       }),
     onSuccess: (purchase) => {
       toast.success(`Received — purchase ${purchase.invoice_number} created, stock updated`)
@@ -69,29 +88,44 @@ export function PurchaseOrderDetailPage() {
       </Link>
       <PageTitle
         actions={
-          order.status === 'open' ? (
-            <>
-              <Button variant="secondary" onClick={() => setCancelOpen(true)}>
-                <Ban size={16} /> Cancel order
-              </Button>
-              <Button onClick={() => setReceiveOpen(true)}>
-                <PackageCheck size={16} /> Receive
-              </Button>
-            </>
-          ) : order.purchase_id ? (
-            <Link to={`/purchases/${order.purchase_id}`}>
-              <Button variant="secondary">View purchase invoice</Button>
-            </Link>
-          ) : undefined
+          <>
+            {/* The order is the document the supplier works from, so it stays
+                printable whatever became of it afterwards. */}
+            <ExportBar
+              module="PurchaseOrder"
+              scope={order.po_number}
+              buildHtml={(docCtx) => purchaseOrderHtml(order, items, docCtx)}
+            />
+            {order.status === 'open' ? (
+              <>
+                <Button variant="secondary" onClick={() => setCancelOpen(true)}>
+                  <Ban size={16} /> Cancel order
+                </Button>
+                <Button onClick={() => setReceiveOpen(true)}>
+                  <PackageCheck size={16} /> Receive
+                </Button>
+              </>
+            ) : order.purchase_id ? (
+              <Link to={`/purchases/${order.purchase_id}`}>
+                <Button variant="secondary">View purchase invoice</Button>
+              </Link>
+            ) : null}
+          </>
         }
       >
         {order.po_number}
       </PageTitle>
 
-      <Card className="mb-4 grid grid-cols-2 gap-4 md:grid-cols-4">
+      <Card className="mb-4 grid grid-cols-2 gap-4 md:grid-cols-5">
         <div>
           <div className="text-xs text-muted">Date</div>
           <div className="mt-1 font-medium">{formatDateTime(order.created_at)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-muted">Expected delivery</div>
+          <div className="mt-1 font-medium">
+            {order.expected_date ?? <span className="text-muted">Not set</span>}
+          </div>
         </div>
         <div>
           <div className="text-xs text-muted">Supplier</div>
@@ -146,6 +180,42 @@ export function PurchaseOrderDetailPage() {
           <span>Total</span>
           <span>{formatMoney(order.total, currency)}</span>
         </div>
+        {batchTracking && (
+          <div className="mb-4 space-y-3 rounded-lg border border-line p-3">
+            <p className="text-xs font-medium uppercase text-muted">Batch &amp; expiry received</p>
+            {items.map((i) => (
+              <div key={i.id} className="grid grid-cols-[1fr_auto_auto] items-end gap-3">
+                <span className="truncate text-sm">{i.product_name}</span>
+                <Field label="Batch">
+                  <Input
+                    value={batchFor(i.id).batch_number}
+                    placeholder="optional"
+                    onChange={(e) =>
+                      setBatches((prev) => ({
+                        ...prev,
+                        [i.id]: { ...batchFor(i.id), batch_number: e.target.value },
+                      }))
+                    }
+                    className="w-28"
+                  />
+                </Field>
+                <Field label="Expiry">
+                  <Input
+                    type="date"
+                    value={batchFor(i.id).expiry_date}
+                    onChange={(e) =>
+                      setBatches((prev) => ({
+                        ...prev,
+                        [i.id]: { ...batchFor(i.id), expiry_date: e.target.value },
+                      }))
+                    }
+                    className="w-36"
+                  />
+                </Field>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-4">
           <Field label="Paid now">
             <Input

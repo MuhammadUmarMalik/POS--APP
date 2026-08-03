@@ -1,19 +1,42 @@
 import { getDb } from '../db'
 import { audit, getStock, uid, writeMovement } from './helpers'
+import { allocateFefo, batchTrackingEnabled, ensureBatch } from './batches'
 import type { InventoryLog, Session } from '../../src/shared/types'
 import type { AdjustmentInput } from '../../src/shared/schemas'
 
 export function adjustStock(session: Session, input: AdjustmentInput): void {
   const db = getDb()
+  const tracking = batchTrackingEnabled(session.shopId)
   db.transaction(() => {
-    writeMovement({
-      shopId: session.shopId,
-      productId: input.product_id,
-      changeType: 'adjustment',
-      quantityChange: input.quantity_change,
-      reason: input.note ? `${input.reason}: ${input.note}` : input.reason,
-      userId: session.userId,
-    })
+    const reason = input.note ? `${input.reason}: ${input.note}` : input.reason
+    // A write-off names the batch it is writing off (expired goods, damage to a
+    // specific lot). Without one, stock leaves first-expiry-first-out and stock
+    // added lands on the unbatched pool.
+    let allocations = [{ batch_id: null as string | null, quantity: Math.abs(input.quantity_change) }]
+    if (tracking && input.batch_id) {
+      allocations = [{ batch_id: input.batch_id, quantity: Math.abs(input.quantity_change) }]
+    } else if (tracking && input.batch_number) {
+      allocations = [
+        {
+          batch_id: ensureBatch(session.shopId, input.product_id, input.batch_number, input.expiry_date),
+          quantity: Math.abs(input.quantity_change),
+        },
+      ]
+    } else if (tracking && input.quantity_change < 0) {
+      allocations = allocateFefo(input.product_id, -input.quantity_change)
+    }
+    const sign = input.quantity_change < 0 ? -1 : 1
+    for (const a of allocations) {
+      writeMovement({
+        shopId: session.shopId,
+        productId: input.product_id,
+        changeType: 'adjustment',
+        quantityChange: sign * a.quantity,
+        reason,
+        userId: session.userId,
+        batchId: a.batch_id,
+      })
+    }
     audit(session, 'stock.adjustment', input)
   })()
 }

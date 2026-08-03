@@ -1,7 +1,10 @@
 import { getDb } from '../db'
 import { uid, now, AppError, audit, getStock, writeMovement, nextInvoiceNumber } from './helpers'
+import { getReturn, writeReturnItems } from './sales'
+import { allocateReturn, batchTrackingEnabled, ensureBatch } from './batches'
 import type {
-  Paged, Purchase, PurchaseItem, PurchaseOrder, PurchaseOrderItem, Payment, Session,
+  Paged, Purchase, PurchaseItem, PurchaseOrder, PurchaseOrderItem, Payment,
+  ReturnReceipt, Session,
 } from '../../src/shared/types'
 import type {
   PurchaseInput, PurchaseOrderInput, PurchaseReturnInput, ReceivePurchaseOrderInput,
@@ -17,8 +20,14 @@ export function createPurchase(session: Session, input: PurchaseInput): Purchase
       .get(input.supplier_id, session.shopId) as { id: string } | undefined
     if (!supplier) throw new AppError('Supplier not found')
 
+    // Received batches are only recorded while the shop has tracking on.
+    const tracking = batchTrackingEnabled(session.shopId)
     let total = 0
-    const lines: { id: string; product_id: string; product_name: string; quantity: number; cost_price: number; total: number }[] = []
+    const lines: {
+      id: string; product_id: string; product_name: string; quantity: number
+      cost_price: number; total: number
+      batch_number: string | null; expiry_date: string | null
+    }[] = []
     for (const item of input.items) {
       const p = db
         .prepare('SELECT id, name, is_deleted FROM products WHERE id = ? AND shop_id = ?')
@@ -33,6 +42,8 @@ export function createPurchase(session: Session, input: PurchaseInput): Purchase
         quantity: item.quantity,
         cost_price: item.cost_price,
         total: lineTotal,
+        batch_number: tracking ? item.batch_number?.trim() || null : null,
+        expiry_date: tracking ? item.expiry_date?.trim() || null : null,
       })
     }
     if (input.paid_amount > total) throw new AppError('Paid amount exceeds purchase total')
@@ -45,11 +56,19 @@ export function createPurchase(session: Session, input: PurchaseInput): Purchase
     ).run(id, session.shopId, input.supplier_id, invoice, total, input.paid_amount, session.userId, ts, ts)
 
     const insertItem = db.prepare(
-      `INSERT INTO purchase_items (id, purchase_id, product_id, product_name, quantity, returned_quantity, cost_price, total)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+      `INSERT INTO purchase_items (id, purchase_id, product_id, product_name, quantity, returned_quantity, cost_price, total, batch_number, expiry_date)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
     )
     for (const l of lines) {
-      insertItem.run(l.id, id, l.product_id, l.product_name, l.quantity, l.cost_price, l.total)
+      insertItem.run(
+        l.id, id, l.product_id, l.product_name, l.quantity, l.cost_price, l.total,
+        l.batch_number, l.expiry_date
+      )
+      // Receiving a batch that does not exist yet creates it; receiving more of
+      // an existing one just adds another ledger row against it.
+      const batchId = tracking
+        ? ensureBatch(session.shopId, l.product_id, l.batch_number, l.expiry_date)
+        : null
       writeMovement({
         shopId: session.shopId,
         productId: l.product_id,
@@ -57,10 +76,11 @@ export function createPurchase(session: Session, input: PurchaseInput): Purchase
         quantityChange: l.quantity,
         referenceId: id,
         userId: session.userId,
+        batchId,
       })
       // Keep product cost price current with the latest purchase cost.
       db.prepare(
-        "UPDATE products SET cost_price = ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+        "UPDATE products SET cost_price = ?, updated_at = ? WHERE id = ?"
       ).run(l.cost_price, ts, l.product_id)
     }
 
@@ -73,7 +93,7 @@ export function createPurchase(session: Session, input: PurchaseInput): Purchase
     const due = total - input.paid_amount
     if (due > 0) {
       db.prepare(
-        "UPDATE suppliers SET due_balance = due_balance + ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+        "UPDATE suppliers SET due_balance = due_balance + ?, updated_at = ? WHERE id = ?"
       ).run(due, ts, input.supplier_id)
     }
     audit(session, 'purchase.create', { purchase_id: id, total, paid: input.paid_amount })
@@ -126,14 +146,16 @@ export function getPurchase(
   return { purchase, items, payments }
 }
 
-export function returnPurchase(session: Session, input: PurchaseReturnInput): void {
+export function returnPurchase(session: Session, input: PurchaseReturnInput): ReturnReceipt {
   const db = getDb()
   const ts = now()
+  const returnTracking = batchTrackingEnabled(session.shopId)
 
-  db.transaction(() => {
+  const returnId = db.transaction(() => {
     const { purchase, items } = getPurchase(session, input.purchase_id)
     if (purchase.status === 'returned') throw new AppError('Purchase is already fully returned')
 
+    const lines: { product_name: string; quantity: number; amount: number }[] = []
     let refund = 0
     for (const ret of input.items) {
       const item = items.find((i) => i.id === ret.purchase_item_id)
@@ -148,27 +170,36 @@ export function returnPurchase(session: Session, input: PurchaseReturnInput): vo
           `Cannot return ${ret.quantity} of "${item.product_name}" — only ${stock} left in stock`
         )
       }
-      refund += item.cost_price * ret.quantity
+      const lineRefund = item.cost_price * ret.quantity
+      refund += lineRefund
+      lines.push({ product_name: item.product_name, quantity: ret.quantity, amount: lineRefund })
       db.prepare('UPDATE purchase_items SET returned_quantity = returned_quantity + ? WHERE id = ?').run(
         ret.quantity,
         item.id
       )
-      writeMovement({
-        shopId: session.shopId,
-        productId: item.product_id,
-        changeType: 'purchase_return',
-        quantityChange: -ret.quantity,
-        reason: input.reason,
-        referenceId: purchase.id,
-        userId: session.userId,
-      })
+      // Send the goods back out of the batches this purchase brought in.
+      const allocations = returnTracking
+        ? allocateReturn(purchase.id, item.product_id, ret.quantity)
+        : [{ batch_id: null, quantity: ret.quantity }]
+      for (const a of allocations) {
+        writeMovement({
+          shopId: session.shopId,
+          productId: item.product_id,
+          changeType: 'purchase_return',
+          quantityChange: -a.quantity,
+          reason: input.reason,
+          referenceId: purchase.id,
+          userId: session.userId,
+          batchId: a.batch_id,
+        })
+      }
     }
 
     const remaining = db
       .prepare('SELECT SUM(quantity - returned_quantity) AS left FROM purchase_items WHERE purchase_id = ?')
       .get(purchase.id) as { left: number }
     db.prepare(
-      "UPDATE purchases SET status = ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+      "UPDATE purchases SET status = ?, updated_at = ? WHERE id = ?"
     ).run(remaining.left === 0 ? 'returned' : 'partially_returned', ts, purchase.id)
 
     if (input.refund_method === 'cash') {
@@ -178,19 +209,24 @@ export function returnPurchase(session: Session, input: PurchaseReturnInput): vo
       ).run(uid(), session.shopId, purchase.id, purchase.supplier_id, refund, input.reason, session.userId, ts)
     } else {
       db.prepare(
-        "UPDATE suppliers SET due_balance = due_balance - ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+        "UPDATE suppliers SET due_balance = due_balance - ?, updated_at = ? WHERE id = ?"
       ).run(refund, ts, purchase.supplier_id)
     }
+    const id = uid()
     db.prepare(
       `INSERT INTO returns (id, shop_id, kind, reference_id, invoice_number, party_name, refund_amount, refund_method, reason, is_cancellation, created_by, created_at)
        VALUES (?, ?, 'purchase', ?, ?, ?, ?, ?, ?, 0, ?, ?)`
     ).run(
-      uid(), session.shopId, purchase.id, purchase.invoice_number, purchase.supplier_name,
+      id, session.shopId, purchase.id, purchase.invoice_number, purchase.supplier_name,
       refund, input.refund_method, input.reason, session.userId, ts
     )
+    writeReturnItems(id, lines)
 
     audit(session, 'purchase.return', { purchase_id: purchase.id, refund, reason: input.reason })
+    return id
   })()
+
+  return getReturn(session, returnId)
 }
 
 // ---- Purchase orders (no stock/due impact until received) ----
@@ -219,9 +255,12 @@ export function createPurchaseOrder(session: Session, input: PurchaseOrderInput)
     const poId = uid()
     const poNumber = nextInvoiceNumber(session.shopId, 'purchase_order')
     db.prepare(
-      `INSERT INTO purchase_orders (id, shop_id, supplier_id, po_number, total, status, note, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`
-    ).run(poId, session.shopId, input.supplier_id, poNumber, total, input.note?.trim() || null, session.userId, ts, ts)
+      `INSERT INTO purchase_orders (id, shop_id, supplier_id, po_number, total, status, note, expected_date, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
+    ).run(
+      poId, session.shopId, input.supplier_id, poNumber, total,
+      input.note?.trim() || null, input.expected_date || null, session.userId, ts, ts
+    )
 
     const ins = db.prepare(
       `INSERT INTO purchase_order_items (id, purchase_order_id, product_id, product_name, quantity, cost_price, total)
@@ -264,8 +303,10 @@ export function getPurchaseOrder(
   const db = getDb()
   const order = db
     .prepare(
-      `SELECT po.*, s.name AS supplier_name FROM purchase_orders po
+      // created_by_name prints as "Authorised by" on the PO sent to the supplier.
+      `SELECT po.*, s.name AS supplier_name, u.name AS created_by_name FROM purchase_orders po
        LEFT JOIN suppliers s ON s.id = po.supplier_id
+       LEFT JOIN users u ON u.id = po.created_by
        WHERE po.id = ? AND po.shop_id = ?`
     )
     .get(id, session.shopId) as PurchaseOrder | undefined
@@ -282,14 +323,21 @@ export function receivePurchaseOrder(session: Session, input: ReceivePurchaseOrd
   const { order, items } = getPurchaseOrder(session, input.id)
   if (order.status !== 'open') throw new AppError(`Purchase order is already ${order.status}`)
 
+  const byItem = new Map((input.batches ?? []).map((b) => [b.item_id, b]))
   const purchase = createPurchase(session, {
     supplier_id: order.supplier_id,
     paid_amount: input.paid_amount,
     method: input.method,
-    items: items.map((i) => ({ product_id: i.product_id, quantity: i.quantity, cost_price: i.cost_price })),
+    items: items.map((i) => ({
+      product_id: i.product_id,
+      quantity: i.quantity,
+      cost_price: i.cost_price,
+      batch_number: byItem.get(i.id)?.batch_number ?? null,
+      expiry_date: byItem.get(i.id)?.expiry_date ?? null,
+    })),
   })
   db.prepare(
-    "UPDATE purchase_orders SET status = 'received', purchase_id = ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+    "UPDATE purchase_orders SET status = 'received', purchase_id = ?, updated_at = ? WHERE id = ?"
   ).run(purchase.id, now(), order.id)
   audit(session, 'purchase_order.receive', { purchase_order_id: order.id, purchase_id: purchase.id })
   return purchase
@@ -299,7 +347,7 @@ export function cancelPurchaseOrder(session: Session, id: string): void {
   const db = getDb()
   const res = db
     .prepare(
-      "UPDATE purchase_orders SET status = 'cancelled', updated_at = ?, sync_status = 'pending' WHERE id = ? AND shop_id = ? AND status = 'open'"
+      "UPDATE purchase_orders SET status = 'cancelled', updated_at = ? WHERE id = ? AND shop_id = ? AND status = 'open'"
     )
     .run(now(), id, session.shopId)
   if (res.changes === 0) throw new AppError('Only open purchase orders can be cancelled')

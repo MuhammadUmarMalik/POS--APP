@@ -5,20 +5,29 @@ import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { formatMoney, toPaisa, toRupees } from '../../lib/money'
 import { useCurrency } from '../../stores/auth'
-import type { ProductWithStock, Purchase, PurchaseOrder, Supplier } from '../../shared/types'
+import type { ProductWithStock, Purchase, PurchaseItem, PurchaseOrder, Supplier } from '../../shared/types'
 import { Button, Card, Field, Input, PageTitle, Select } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
+import { useDocContext, usePrinter } from '../../lib/export'
+import { purchaseInvoiceHtml } from './invoice'
+import { useBatchTracking } from '../batches/useBatchSettings'
 
 interface Line {
   product: ProductWithStock
   quantity: number
   cost: string // rupees, editable
+  /** Only collected when the shop tracks batches; blank means unbatched stock. */
+  batch_number: string
+  expiry_date: string
 }
 
 export function NewPurchasePage() {
   const currency = useCurrency()
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const ctx = useDocContext()
+  const { print } = usePrinter()
+  const batchTracking = useBatchTracking()
   const [supplierId, setSupplierId] = useState('')
   const [newSupplier, setNewSupplier] = useState('')
   const [productSearch, setProductSearch] = useState('')
@@ -26,6 +35,9 @@ export function NewPurchasePage() {
   const [paid, setPaid] = useState('')
   const [method, setMethod] = useState<'cash' | 'card'>('cash')
   const [submitting, setSubmitting] = useState(false)
+  // Only meaningful on a purchase order: it is the date asked of the supplier,
+  // and it prints on the copy they receive.
+  const [expectedDate, setExpectedDate] = useState('')
 
   const { data: suppliers } = useQuery({
     queryKey: ['suppliers', ''],
@@ -39,7 +51,16 @@ export function NewPurchasePage() {
   const addLine = (p: ProductWithStock) => {
     setLines((prev) => {
       if (prev.some((l) => l.product.id === p.id)) return prev
-      return [...prev, { product: p, quantity: 1, cost: String(toRupees(p.cost_price)) }]
+      return [
+        ...prev,
+        {
+          product: p,
+          quantity: 1,
+          cost: String(toRupees(p.cost_price ?? 0)),
+          batch_number: '',
+          expiry_date: '',
+        },
+      ]
     })
     setProductSearch('')
   }
@@ -70,6 +91,7 @@ export function NewPurchasePage() {
     try {
       const po = await api<PurchaseOrder>('purchaseOrders:create', {
         supplier_id: supplierId,
+        expected_date: expectedDate || null,
         items: lines.map((l) => ({
           product_id: l.product.id,
           quantity: l.quantity,
@@ -86,6 +108,19 @@ export function NewPurchasePage() {
     }
   }
 
+  // Same rule as the counter: print only if the shop asked for it, and say so
+  // out loud when the printer refuses. The saved purchase is unaffected either
+  // way — it can always be reprinted from its detail page.
+  const autoPrint = async (id: string) => {
+    if (!ctx.settings.auto_print_on_save) return
+    try {
+      const detail = await api<{ purchase: Purchase; items: PurchaseItem[] }>('purchases:get', { id })
+      await print(purchaseInvoiceHtml(detail.purchase, detail.items, ctx), ctx.settings, { silent: true })
+    } catch (e) {
+      toast.error(`Invoice not printed: ${(e as Error).message}. Reprint it from the purchase.`)
+    }
+  }
+
   const submit = async () => {
     if (!supplierId) return toast.warning('Select a supplier')
     if (lines.length === 0) return toast.warning('Add at least one product')
@@ -98,6 +133,9 @@ export function NewPurchasePage() {
           product_id: l.product.id,
           quantity: l.quantity,
           cost_price: toPaisa(l.cost) || 0,
+          ...(batchTracking
+            ? { batch_number: l.batch_number || null, expiry_date: l.expiry_date || null }
+            : {}),
         })),
         paid_amount: paidPaisa,
         method,
@@ -106,6 +144,7 @@ export function NewPurchasePage() {
       void qc.invalidateQueries({ queryKey: ['products'] })
       void qc.invalidateQueries({ queryKey: ['purchases'] })
       void qc.invalidateQueries({ queryKey: ['suppliers'] })
+      await autoPrint(purchase.id)
       navigate(`/purchases/${purchase.id}`)
     } catch (e) {
       toast.error((e as Error).message)
@@ -173,6 +212,8 @@ export function NewPurchasePage() {
                 <th className="py-2">Product</th>
                 <th className="py-2 text-right">Qty</th>
                 <th className="py-2 text-right">Unit cost ({currency})</th>
+                {batchTracking && <th className="py-2">Batch</th>}
+                {batchTracking && <th className="py-2">Expiry</th>}
                 <th className="py-2 text-right">Line total</th>
                 <th className="py-2"></th>
               </tr>
@@ -207,6 +248,38 @@ export function NewPurchasePage() {
                       className="w-28 rounded-md border border-line px-2 py-1 text-right focus:border-primary focus:outline-none"
                     />
                   </td>
+                  {batchTracking && (
+                    <td className="py-2">
+                      <input
+                        value={l.batch_number}
+                        placeholder="optional"
+                        onChange={(e) =>
+                          setLines((prev) =>
+                            prev.map((x) =>
+                              x.product.id === l.product.id ? { ...x, batch_number: e.target.value } : x
+                            )
+                          )
+                        }
+                        className="w-28 rounded-md border border-line px-2 py-1 focus:border-primary focus:outline-none"
+                      />
+                    </td>
+                  )}
+                  {batchTracking && (
+                    <td className="py-2">
+                      <input
+                        type="date"
+                        value={l.expiry_date}
+                        onChange={(e) =>
+                          setLines((prev) =>
+                            prev.map((x) =>
+                              x.product.id === l.product.id ? { ...x, expiry_date: e.target.value } : x
+                            )
+                          )
+                        }
+                        className="w-36 rounded-md border border-line px-2 py-1 focus:border-primary focus:outline-none"
+                      />
+                    </td>
+                  )}
                   <td className="py-2 text-right font-medium">
                     {formatMoney((toPaisa(l.cost) || 0) * l.quantity, currency)}
                   </td>
@@ -251,6 +324,9 @@ export function NewPurchasePage() {
         <Button size="lg" className="w-full" onClick={submit} loading={submitting} disabled={lines.length === 0 || !supplierId}>
           Save purchase
         </Button>
+        <Field label="Expected delivery" hint="Prints on the purchase order sent to the supplier">
+          <Input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} />
+        </Field>
         <Button
           size="lg"
           variant="secondary"

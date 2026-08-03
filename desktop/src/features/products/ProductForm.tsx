@@ -7,6 +7,7 @@ import { toPaisa, toRupees } from '../../lib/money'
 import type { Brand, Category, ProductImage, ProductWithStock } from '../../shared/types'
 import { Button, Field, Input, Modal, Select } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
+import { useBatchTracking } from '../batches/useBatchSettings'
 
 interface FormValues {
   name: string
@@ -19,6 +20,9 @@ interface FormValues {
   sale_price: number
   tax_percent: number
   min_stock_alert: number
+  opening_stock: number
+  batch_number: string
+  expiry_date: string
 }
 
 export function ProductForm({
@@ -38,6 +42,7 @@ export function ProductForm({
   const [newCategory, setNewCategory] = useState('')
   const [newBrand, setNewBrand] = useState('')
   const [images, setImages] = useState<string[]>([])
+  const batchTracking = useBatchTracking()
   const {
     register,
     handleSubmit,
@@ -57,14 +62,18 @@ export function ProductForm({
             category_id: product.category_id ?? '',
             brand_id: product.brand_id ?? '',
             unit: product.unit,
-            cost_price: toRupees(product.cost_price),
+            cost_price: toRupees(product.cost_price ?? 0),
             sale_price: toRupees(product.sale_price),
             tax_percent: product.tax_percent,
             min_stock_alert: product.min_stock_alert,
+            opening_stock: 0,
+            batch_number: product.batch_number ?? '',
+            expiry_date: product.expiry_date ?? '',
           }
         : {
             name: '', sku: '', barcode: '', category_id: '', brand_id: '', unit: 'pcs',
-            cost_price: 0, sale_price: 0, tax_percent: 0, min_stock_alert: 0,
+            cost_price: 0, sale_price: 0, tax_percent: 0, min_stock_alert: 0, opening_stock: 0,
+            batch_number: '', expiry_date: '',
           }
     )
     setNewCategory('')
@@ -130,14 +139,22 @@ export function ProductForm({
       tax_percent: Number(v.tax_percent) || 0,
       min_stock_alert: Number(v.min_stock_alert) || 0,
       images,
+      // Omitted entirely when the feature is off, so the payload is byte-for-byte
+      // what it was before batch tracking existed.
+      ...(batchTracking
+        ? { batch_number: v.batch_number || null, expiry_date: v.expiry_date || null }
+        : {}),
     }
     try {
       if (product) {
         await api('products:update', { id: product.id, ...payload })
         toast.success('Product updated')
       } else {
-        await api('products:create', payload)
-        toast.success('Product added')
+        // Opening stock is create-only and becomes a ledger movement, not a
+        // stock column. Editing a product never restates it.
+        const opening = Math.max(0, Math.trunc(Number(v.opening_stock) || 0))
+        await api('products:create', { ...payload, ...(opening > 0 ? { opening_stock: opening } : {}) })
+        toast.success(opening > 0 ? `Product added with ${opening} in stock` : 'Product added')
       }
       void qc.invalidateQueries({ queryKey: ['products'] })
       void qc.invalidateQueries({ queryKey: ['pos-products'] })
@@ -172,6 +189,14 @@ export function ProductForm({
           <Field label="Category">
             <Select {...register('category_id')}>
               <option value="">— None —</option>
+              {/* A product filed under a retired category keeps it. The option is
+                  listed so that editing the price does not silently move the
+                  product out of the category it has always been in. */}
+              {product?.category_id && !categories.some((c) => c.id === product.category_id) && (
+                <option value={product.category_id}>
+                  {product.category_name ?? 'Current category'} (hidden)
+                </option>
+              )}
               {categories.map((c) => (
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
@@ -244,7 +269,7 @@ export function ProductForm({
           </Field>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className={product ? 'grid grid-cols-2 gap-4' : 'grid grid-cols-3 gap-4'}>
           <Field label="Unit">
             <Select {...register('unit')}>
               {['pcs', 'kg', 'g', 'litre', 'ml', 'box', 'pack', 'dozen'].map((u) => (
@@ -255,7 +280,28 @@ export function ProductForm({
           <Field label="Low stock alert at">
             <Input type="number" min="0" {...register('min_stock_alert', { valueAsNumber: true })} />
           </Field>
+          {/* Only on create. Changing stock later is an adjustment, so that the
+              ledger keeps one honest reason per movement. */}
+          {!product && (
+            <Field label="Opening stock" hint="Optional — how many you already have on the shelf">
+              <Input
+                type="number" min="0" step="1"
+                {...register('opening_stock', { valueAsNumber: true, min: 0 })}
+              />
+            </Field>
+          )}
         </div>
+
+        {batchTracking && (
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Batch number" hint="Optional — the lot this product first arrives as">
+              <Input {...register('batch_number')} placeholder="e.g. B-2401" />
+            </Field>
+            <Field label="Expiry date" hint="Sold first when several batches are in stock">
+              <Input type="date" {...register('expiry_date')} />
+            </Field>
+          </div>
+        )}
 
         <Field label={`Images (${images.length}/8)`}>
           <div className="flex flex-wrap gap-2">

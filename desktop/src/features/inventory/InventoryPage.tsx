@@ -9,6 +9,7 @@ import { Badge, Button, Card, EmptyState, Input, PageTitle, Spinner } from '../.
 import { stockTone } from '../products/ProductsPage'
 import { AdjustmentModal } from './AdjustmentModal'
 import { MovementsModal } from './MovementsModal'
+import { ExpiryAlert } from '../batches/ExpiryAlert'
 
 export function InventoryPage() {
   const currency = useCurrency()
@@ -30,7 +31,7 @@ export function InventoryPage() {
     let cost = 0, retail = 0
     for (const p of products ?? []) {
       if (p.stock > 0) {
-        cost += p.stock * p.cost_price
+        cost += p.stock * (p.cost_price ?? 0)
         retail += p.stock * p.sale_price
       }
     }
@@ -40,6 +41,8 @@ export function InventoryPage() {
   return (
     <div>
       <PageTitle>Inventory</PageTitle>
+
+      <ExpiryAlert />
 
       <div className="mb-4 grid grid-cols-3 gap-4">
         <Card>
@@ -96,7 +99,7 @@ export function InventoryPage() {
                   </td>
                   <td className="px-4 py-2.5 text-right text-muted">{p.min_stock_alert}</td>
                   <td className="px-4 py-2.5 text-right">
-                    {p.stock > 0 ? formatMoney(p.stock * p.cost_price, currency) : '—'}
+                    {p.stock > 0 ? formatMoney(p.stock * (p.cost_price ?? 0), currency) : '—'}
                   </td>
                   <td className="px-4 py-2.5">
                     <div className="flex justify-end gap-1">
