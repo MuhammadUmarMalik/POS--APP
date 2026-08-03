@@ -2,10 +2,14 @@ import { lazy, Suspense, useEffect, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth, useSession } from './stores/auth'
 import { Spinner } from './components/ui'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { StartupScreen } from './components/StartupScreen'
 import { Toaster } from './components/ui/toast'
 import { SetupWizard } from './features/auth/SetupWizard'
 import { Login } from './features/auth/Login'
 import { usePreferences } from './stores/preferences'
+import { usePrintSettings } from './stores/printSettings'
+import { RESTORE_TEXT, useRestore } from './stores/restore'
 
 const Shell = lazy(() => import('./features/shell/Shell').then((m) => ({ default: m.Shell })))
 const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })))
@@ -38,16 +42,31 @@ export default function App() {
   const state = useAuth((s) => s.state)
   const init = useAuth((s) => s.init)
   const reduceMotion = usePreferences((s) => s.reduceMotion)
+  const loadPrintSettings = usePrintSettings((s) => s.load)
+  const restorePhase = useRestore((s) => s.phase)
+  const signedIn = !!state?.session
 
   useEffect(() => {
     void init()
   }, [init])
 
+  // Printer & receipt settings are shop-scoped, so they are fetched once a
+  // session exists and refetched after a different user signs in.
+  useEffect(() => {
+    if (signedIn) void loadPrintSettings()
+  }, [signedIn, loadPrintSettings])
+
   useEffect(() => {
     document.documentElement.classList.toggle('reduce-motion', reduceMotion)
   }, [reduceMotion])
 
-  if (!loaded) return <Spinner />
+  // Takes precedence over everything, including the auth screens the restore
+  // was started from: the database is being swapped out underneath them.
+  if (restorePhase) return <StartupScreen {...RESTORE_TEXT[restorePhase]} />
+  // Never a bare spinner: this is the screen a shop stares at while the main
+  // process opens (and possibly migrates) the database, which after a restore
+  // can take a while on a large shop.
+  if (!loaded) return <StartupScreen title="Starting POS Desktop…" />
   if (startupError) {
     return (
       <div className="flex min-h-full items-center justify-center bg-page p-6">
@@ -83,6 +102,9 @@ export default function App() {
   }
 
   return (
+    // Scoped to the routed area so a page that throws — or a lazy chunk that
+    // fails to load — reports itself instead of taking the whole window blank.
+    <ErrorBoundary title="This screen could not be opened">
     <Suspense fallback={<Spinner />}>
       <Routes>
       <Route element={<Shell />}>
@@ -106,5 +128,6 @@ export default function App() {
       </Route>
       </Routes>
     </Suspense>
+    </ErrorBoundary>
   )
 }
