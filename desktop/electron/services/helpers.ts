@@ -34,12 +34,14 @@ export function writeMovement(args: {
   reason?: string | null
   referenceId?: string | null
   userId?: string | null
+  /** Null = stock held outside any batch. Only set when batch tracking is on. */
+  batchId?: string | null
 }) {
   getDb()
     .prepare(
       `INSERT INTO inventory_logs
-       (id, shop_id, product_id, change_type, quantity_change, reason, reference_id, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, shop_id, product_id, change_type, quantity_change, reason, reference_id, created_by, created_at, batch_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       uid(),
@@ -50,7 +52,8 @@ export function writeMovement(args: {
       args.reason ?? null,
       args.referenceId ?? null,
       args.userId ?? null,
-      now()
+      now(),
+      args.batchId ?? null
     )
 }
 
@@ -58,6 +61,7 @@ const INVOICE_KINDS = {
   sale: { col: 'sale_seq', prefix: 'INV' },
   purchase: { col: 'purchase_seq', prefix: 'PUR' },
   purchase_order: { col: 'po_seq', prefix: 'PO' },
+  customer_payment: { col: 'payment_seq', prefix: 'RCP' },
 } as const
 
 export function nextInvoiceNumber(shopId: string, kind: keyof typeof INVOICE_KINDS): string {

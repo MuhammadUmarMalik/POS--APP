@@ -23,7 +23,6 @@ export const PERMISSIONS = [
   'users.manage',        // manage users and their permissions
   'settings.manage',     // shop profile, logo, backup & restore, printer settings
   'subscription.manage', // membership activation and payment proof
-  'sync.manage',         // cloud sync settings and manual sync
 ] as const
 export type PermissionKey = (typeof PERMISSIONS)[number]
 
@@ -43,7 +42,6 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   'users.manage': 'Manage users',
   'settings.manage': 'Manage settings',
   'subscription.manage': 'Manage membership',
-  'sync.manage': 'Manage cloud sync',
 }
 
 export const PERMISSION_GROUPS: { label: string; keys: PermissionKey[] }[] = [
@@ -52,7 +50,7 @@ export const PERMISSION_GROUPS: { label: string; keys: PermissionKey[] }[] = [
   { label: 'Catalog & stock', keys: ['products.manage', 'inventory.manage', 'inventory.transfer'] },
   { label: 'Purchasing', keys: ['purchases.manage', 'expenses.manage'] },
   { label: 'Reports', keys: ['reports.view', 'reports.profit'] },
-  { label: 'Administration', keys: ['users.manage', 'settings.manage', 'subscription.manage', 'sync.manage'] },
+  { label: 'Administration', keys: ['users.manage', 'settings.manage', 'subscription.manage'] },
 ]
 
 /** Permissions granted to a new user of the given role when no admin override exists. */

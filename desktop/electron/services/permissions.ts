@@ -10,7 +10,7 @@ import {
  * stored user_permissions rows win, falling back to the role defaults for
  * accounts created before the permission system existed. */
 export function userPermissions(session: Pick<Session, 'shopId' | 'userId' | 'role'>): PermissionKey[] {
-  if (session.role === 'admin') return [...ROLE_DEFAULT_PERMISSIONS.manager, 'users.manage', 'settings.manage', 'subscription.manage', 'sync.manage']
+  if (session.role === 'admin') return [...ROLE_DEFAULT_PERMISSIONS.manager, 'users.manage', 'settings.manage', 'subscription.manage']
   const rows = getDb()
     .prepare('SELECT permission FROM user_permissions WHERE user_id = ? AND shop_id = ?')
     .all(session.userId, session.shopId) as { permission: PermissionKey }[]
@@ -24,6 +24,34 @@ export function userPermissions(session: Pick<Session, 'shopId' | 'userId' | 'ro
 export function hasPermission(session: Pick<Session, 'shopId' | 'userId' | 'role'>, permission: PermissionKey): boolean {
   if (session.role === 'admin') return true
   return userPermissions(session).includes(permission)
+}
+
+/**
+ * True when the session may see what the shop paid — cost prices, margins and
+ * anything derived from them. Deliberately role-based rather than a permission
+ * key: permission rows are stored per user, so a key added after those rows
+ * were written would silently be missing and quietly re-open the leak.
+ *
+ * Cost is stripped in the main process, not hidden in the UI: a cashier
+ * running devtools must not be able to read the buying price out of an IPC
+ * response.
+ */
+export function canViewCost(session: Pick<Session, 'role'>): boolean {
+  return session.role === 'admin' || session.role === 'manager'
+}
+
+/** The row without its cost, for handing back to someone who may not see it. */
+export function stripCost<T extends { cost_price?: number }>(row: T): Omit<T, 'cost_price'> {
+  const { cost_price: _cost, ...rest } = row
+  return rest
+}
+
+/** `rows` as-is for management, cost-free for everyone else. */
+export function costFiltered<T extends { cost_price?: number }>(
+  session: Pick<Session, 'role'>,
+  rows: T[]
+): T[] {
+  return canViewCost(session) ? rows : (rows.map(stripCost) as T[])
 }
 
 /** Replace a user's permission set with exactly `granted`. */

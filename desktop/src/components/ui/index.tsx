@@ -5,6 +5,7 @@ import {
   type InputHTMLAttributes,
   type ReactNode,
   type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
   useEffect,
   useState,
 } from 'react'
@@ -53,12 +54,15 @@ export function Field({
   label,
   required,
   error,
+  hint,
   children,
   className,
 }: {
   label: string
   required?: boolean
   error?: string
+  /** Explanatory text under the control. Hidden while an error is showing. */
+  hint?: ReactNode
   children: ReactNode
   className?: string
 }) {
@@ -68,7 +72,11 @@ export function Field({
         {label} {required && <span className="text-danger">*</span>}
       </span>
       {children}
-      {error && <span className="mt-1 block text-xs text-danger">{error}</span>}
+      {error ? (
+        <span className="mt-1 block text-xs text-danger">{error}</span>
+      ) : (
+        hint && <span className="mt-1 block text-xs text-muted">{hint}</span>
+      )}
     </label>
   )
 }
@@ -81,6 +89,27 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
         ref={ref}
         className={cn(
           'w-full rounded-md border border-line bg-surface px-3 py-2.5 text-sm',
+          'placeholder:text-slate-400',
+          'focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20',
+          className
+        )}
+        {...rest}
+      />
+    )
+  }
+)
+
+// ---- Textarea ----
+// Same skin as Input, for the few places that hold a paragraph rather than a
+// value — supplier notes, expense descriptions.
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(
+  function Textarea({ className, rows = 3, ...rest }, ref) {
+    return (
+      <textarea
+        ref={ref}
+        rows={rows}
+        className={cn(
+          'w-full resize-y rounded-md border border-line bg-surface px-3 py-2.5 text-sm',
           'placeholder:text-slate-400',
           'focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20',
           className

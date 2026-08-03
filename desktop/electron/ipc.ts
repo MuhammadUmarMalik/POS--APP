@@ -5,12 +5,16 @@ import { ipcMain, shell } from 'electron'
 import { z, type ZodTypeAny } from 'zod'
 import type { IpcResult, Session } from '../src/shared/types'
 import {
-  setupSchema, loginSchema, productSchema, categorySchema, customerSchema,
+  setupSchema, loginSchema, productSchema, productCreateSchema, categorySchema,
+  categoryUpdateSchema, categoryActiveSchema, categoryListSchema, customerSchema,
   supplierSchema, checkoutSchema, saleReturnSchema, adjustmentSchema,
   purchaseSchema, purchaseReturnSchema, partyPaymentSchema, userCreateSchema,
   shopSettingsSchema, changePasswordSchema, updateProfileSchema, recoverPasswordSchema,
   holdSaleSchema, purchaseOrderSchema, receivePurchaseOrderSchema, expenseSchema, uuid,
-  activateLicenseSchema, paymentProofSchema, syncSettingsSchema,
+  activateLicenseSchema, paymentProofSchema,
+  driveBackupSettingsSchema, driveBackupRestoreSchema, localBackupRestoreSchema,
+  localBackupSettingsSchema, printSettingsSchema,
+  batchSettingsSchema, expiryReportSchema,
 } from '../src/shared/schemas'
 import { AppError } from './services/helpers'
 import { getSession } from './services/session'
@@ -22,13 +26,18 @@ import * as purchases from './services/purchases'
 import * as inventory from './services/inventory'
 import * as reports from './services/reports'
 import * as settings from './services/settings'
+import * as printSettings from './services/printSettings'
 import * as expenses from './services/expenses'
 import * as importExport from './services/importExport'
 import * as subscription from './services/subscription'
-import * as sync from './services/sync'
+import * as googleDriveBackup from './services/googleDriveBackup'
+import * as localBackup from './services/localBackup'
+import * as localAutoBackup from './services/localAutoBackup'
+import * as batches from './services/batches'
 import { pickProductImages } from './services/images'
 import { seedDemoData } from './services/seed'
 import { printHtml } from './services/print'
+import { exportPdf, exportCsv } from './services/export'
 
 type Access = 'public' | 'user' | 'admin'
 
@@ -44,6 +53,17 @@ const idSchema = z.object({ id: uuid })
 const rangeSchema = z.object({ from: z.string(), to: z.string() })
 const withId = <T extends ZodTypeAny>(s: T) => z.object({ id: uuid }).and(s)
 
+const paperSchema = z.object({
+  size: z.enum(['A4', 'A5', 'Letter', 'Legal', 'Tabloid', 'Thermal80', 'Thermal58']).optional(),
+  landscape: z.boolean().optional(),
+  marginTopMm: z.number().min(0).max(50).optional(),
+  marginRightMm: z.number().min(0).max(50).optional(),
+  marginBottomMm: z.number().min(0).max(50).optional(),
+  marginLeftMm: z.number().min(0).max(50).optional(),
+  color: z.enum(['color', 'grayscale', 'bw']).optional(),
+  pageNumbers: z.boolean().optional(),
+})
+
 const routes: Record<string, Route> = {
   // ---- auth ----
   'auth:state': { access: 'public', handler: () => auth.authState() },
@@ -53,6 +73,18 @@ const routes: Record<string, Route> = {
   'auth:changePassword': { access: 'user', schema: changePasswordSchema, handler: (p, s) => auth.changePassword(s, p) },
   'auth:updateProfile': { access: 'user', schema: updateProfileSchema, handler: (p, s) => auth.updateProfile(s, p) },
   'auth:recoverPassword': { access: 'public', schema: recoverPasswordSchema, handler: (p) => auth.recoverPassword(p) },
+
+  // Fresh-install recovery is public so a new device can restore before setup.
+  // Every handler independently refuses access once any shop exists locally.
+  'driveRecovery:status': { access: 'public', handler: () => googleDriveBackup.getRecoveryStatus() },
+  'driveRecovery:connect': { access: 'public', handler: () => googleDriveBackup.connectForRecovery() },
+  'driveRecovery:disconnect': { access: 'public', handler: () => googleDriveBackup.disconnectForRecovery() },
+  'driveRecovery:list': { access: 'public', handler: () => googleDriveBackup.listRecoveryBackups() },
+  'driveRecovery:restore': {
+    access: 'public', schema: driveBackupRestoreSchema,
+    handler: (p) => googleDriveBackup.restoreForRecovery(p),
+  },
+  'localRecovery:restore': { access: 'public', handler: () => localBackup.restoreForSetup() },
 
   // ---- catalog ----
   'products:list': {
@@ -71,12 +103,23 @@ const routes: Record<string, Route> = {
     schema: z.object({ barcode: z.string().min(1) }),
     handler: (p: { barcode: string }, s) => catalog.getProductByBarcode(s, p.barcode),
   },
-  'products:create': { access: 'admin', schema: productSchema, handler: (p, s) => catalog.createProduct(s, p) },
+  // Create takes an optional opening stock; update deliberately does not — a
+  // later correction is an adjustment, not a restatement of the opening figure.
+  'products:create': { access: 'admin', schema: productCreateSchema, handler: (p, s) => catalog.createProduct(s, p) },
   'products:update': { access: 'admin', schema: withId(productSchema), handler: (p, s) => catalog.updateProduct(s, p) },
   'products:delete': { access: 'admin', schema: idSchema, handler: (p: { id: string }, s) => catalog.deleteProduct(s, p.id) },
   'products:generateBarcode': { access: 'admin', handler: (_p, s) => catalog.generateBarcode(s) },
-  'categories:list': { access: 'user', handler: (_p, s) => catalog.listCategories(s) },
+  'categories:list': { access: 'user', schema: categoryListSchema.optional(), handler: (p, s) => catalog.listCategories(s, p ?? {}) },
   'categories:create': { access: 'admin', schema: categorySchema, handler: (p, s) => catalog.createCategory(s, p) },
+  // Rename and retire are admin-only and both write an audit row: a category
+  // name is printed on receipts and reports, so changing it is not cosmetic.
+  'categories:update': { access: 'admin', schema: categoryUpdateSchema, handler: (p, s) => catalog.updateCategory(s, p) },
+  'categories:setActive': { access: 'admin', schema: categoryActiveSchema, handler: (p, s) => catalog.setCategoryActive(s, p) },
+  'categories:productCount': {
+    access: 'admin',
+    schema: idSchema,
+    handler: (p: { id: string }, s) => catalog.countCategoryProducts(s, p.id),
+  },
   'brands:list': { access: 'user', handler: (_p, s) => catalog.listBrands(s) },
   'brands:create': { access: 'admin', schema: categorySchema, handler: (p, s) => catalog.createBrand(s, p) },
   'products:images': {
@@ -122,6 +165,8 @@ const routes: Record<string, Route> = {
       .optional(),
     handler: (p, s) => sales.listReturns(s, p ?? {}),
   },
+  // One return event with its lines, for reprinting the slip.
+  'returns:get': { access: 'admin', schema: idSchema, handler: (p: { id: string }, s) => sales.getReturn(s, p.id) },
 
   // ---- customers (cashiers can register customers and take due payments at the till) ----
   'customers:list': {
@@ -187,6 +232,32 @@ const routes: Record<string, Route> = {
   'expenses:delete': { access: 'admin', schema: idSchema, handler: (p: { id: string }, s) => expenses.deleteExpense(s, p.id) },
   'expenseCategories:list': { access: 'admin', handler: (_p, s) => expenses.listExpenseCategories(s) },
   'expenseCategories:create': { access: 'admin', schema: categorySchema, handler: (p, s) => expenses.createExpenseCategory(s, p) },
+
+  // ---- batch / expiry (optional feature) ----
+  // Read is `user`: the POS and inventory screens need to know whether to show
+  // batch fields at all. Writes stay admin-only.
+  'batches:settings': { access: 'user', handler: (_p, s) => batches.getBatchSettings(s.shopId) },
+  'batches:updateSettings': {
+    access: 'admin',
+    schema: batchSettingsSchema,
+    handler: (p, s) => batches.updateBatchSettings(s, p),
+  },
+  'batches:forProduct': {
+    access: 'user',
+    schema: z.object({ product_id: uuid }),
+    handler: (p: { product_id: string }, s) => batches.productBatches(s, p.product_id),
+  },
+  'reports:expiry': {
+    access: 'admin',
+    schema: expiryReportSchema,
+    handler: (p, s) => batches.expiryReport(s, p),
+  },
+  // Inventory expiry alerts are operational, so cashiers/managers see them too.
+  'inventory:expiring': {
+    access: 'user',
+    schema: expiryReportSchema,
+    handler: (p, s) => batches.expiryReport(s, p),
+  },
 
   // ---- inventory ----
   'inventory:adjust': { access: 'admin', schema: adjustmentSchema, handler: (p, s) => inventory.adjustStock(s, p) },
@@ -256,12 +327,42 @@ const routes: Record<string, Route> = {
   'subscription:activate': { access: 'admin', schema: activateLicenseSchema, handler: (p, s) => subscription.activateLicense(s, p) },
   'subscription:uploadPaymentProof': { access: 'admin', schema: paymentProofSchema, handler: (p, s) => subscription.uploadPaymentProof(s, p) },
 
-  // ---- cloud sync ----
-  'sync:status': { access: 'admin', handler: (_p, s) => sync.getSyncStatus(s) },
-  'sync:manual': { access: 'admin', handler: (_p, s) => sync.manualSync(s) },
-  'sync:logs': { access: 'admin', handler: (_p, s) => sync.listSyncLogs(s) },
-  'sync:conflicts': { access: 'admin', handler: (_p, s) => sync.listSyncConflicts(s) },
-  'sync:updateSettings': { access: 'admin', schema: syncSettingsSchema, handler: (p, s) => sync.updateSyncSettings(s, p) },
+  // ---- Google Drive full backups ----
+  'driveBackup:status': { access: 'admin', handler: (_p, s) => googleDriveBackup.getStatus(s) },
+  'driveBackup:connect': { access: 'admin', handler: (_p, s) => googleDriveBackup.connect(s) },
+  'driveBackup:disconnect': { access: 'admin', handler: (_p, s) => googleDriveBackup.disconnect(s) },
+  'driveBackup:updateSettings': {
+    access: 'admin', schema: driveBackupSettingsSchema,
+    handler: (p, s) => googleDriveBackup.updateSettings(s, p),
+  },
+  'driveBackup:run': { access: 'admin', handler: (_p, s) => googleDriveBackup.backupNow(s) },
+  'driveBackup:list': { access: 'admin', handler: (_p, s) => googleDriveBackup.listBackups(s) },
+  'driveBackup:logs': { access: 'admin', handler: (_p, s) => googleDriveBackup.listLogs(s) },
+  'driveBackup:restore': {
+    access: 'admin', schema: driveBackupRestoreSchema,
+    handler: (p, s) => googleDriveBackup.restore(s, p),
+  },
+
+  // ---- local backup files ----
+  'localBackup:restore': {
+    access: 'admin', schema: localBackupRestoreSchema,
+    handler: (p, s) => localBackup.restoreFromFile(s, p),
+  },
+
+  // ---- automatic local backups ----
+  'localAutoBackup:status': { access: 'admin', handler: (_p, s) => localAutoBackup.getStatus(s) },
+  'localAutoBackup:updateSettings': {
+    access: 'admin', schema: localBackupSettingsSchema,
+    handler: (p, s) => localAutoBackup.updateSettings(s, p),
+  },
+  'localAutoBackup:run': { access: 'admin', handler: (_p, s) => localAutoBackup.backupNow(s) },
+  'localAutoBackup:list': { access: 'admin', handler: (_p, s) => localAutoBackup.listBackups(s) },
+  'localAutoBackup:logs': { access: 'admin', handler: (_p, s) => localAutoBackup.listLogs(s) },
+  'localAutoBackup:prune': { access: 'admin', handler: (_p, s) => localAutoBackup.pruneNow(s) },
+  // The folder comes from the OS picker, never from the renderer.
+  'localAutoBackup:chooseFolder': { access: 'admin', handler: (_p, s) => localAutoBackup.chooseFolder(s) },
+  'localAutoBackup:useDefaultFolder': { access: 'admin', handler: (_p, s) => localAutoBackup.useDefaultFolder(s) },
+  'localAutoBackup:openFolder': { access: 'admin', handler: (_p, s) => localAutoBackup.openFolder(s) },
 
   // ---- misc ----
   'app:openExternal': {
@@ -270,11 +371,43 @@ const routes: Record<string, Route> = {
     handler: (p: { url: string }) => shell.openExternal(p.url),
   },
 
-  // ---- printing ----
+  // ---- printer & receipt settings ----
+  // Readable by any user: every print path resolves its page setup from here,
+  // including a cashier completing a sale. Only admins may change them.
+  'printSettings:get': { access: 'user', handler: (_p, s) => printSettings.getPrintSettings(s.shopId) },
+  'printSettings:update': {
+    access: 'admin',
+    schema: printSettingsSchema,
+    handler: (p, s) => printSettings.updatePrintSettings(s, p),
+  },
+  'printSettings:reset': { access: 'admin', handler: (_p, s) => printSettings.resetPrintSettings(s) },
+  'printers:list': { access: 'user', handler: () => printSettings.listPrinters() },
+
+  // ---- printing & export ----
   'print:html': {
     access: 'user',
-    schema: z.object({ html: z.string().min(1), silent: z.boolean().optional() }),
+    schema: z.object({
+      html: z.string().min(1),
+      silent: z.boolean().optional(),
+      deviceName: z.string().max(200).optional(),
+      copies: z.number().int().min(1).max(10).optional(),
+      color: z.enum(['color', 'grayscale', 'bw']).optional(),
+    }),
     handler: (p) => printHtml(p),
+  },
+  'export:pdf': {
+    access: 'user',
+    schema: z.object({
+      html: z.string().min(1),
+      fileName: z.string().min(1).max(160),
+      paper: paperSchema.optional(),
+    }),
+    handler: (p) => exportPdf(p),
+  },
+  'export:csv': {
+    access: 'user',
+    schema: z.object({ csv: z.string(), fileName: z.string().min(1).max(160) }),
+    handler: (p) => exportCsv(p),
   },
 }
 
