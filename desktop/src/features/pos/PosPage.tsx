@@ -3,14 +3,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Minus, PauseCircle, Plus, ScanBarcode, Trash2, X } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { formatMoney, toPaisa } from '../../lib/money'
-import { useAuth, useCurrency, useSession } from '../../stores/auth'
+import { useCurrency, useSession } from '../../stores/auth'
 import type { HeldCartLine, HeldSale, ProductWithStock, Sale, SaleItem } from '../../shared/types'
 import { Badge, Button, Card, Input, Spinner } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
 import { stockTone } from '../products/ProductsPage'
 import { PaymentModal } from './PaymentModal'
 import { HeldSalesModal } from './HeldSalesModal'
-import { receiptHtml } from '../sales/receipt'
+import { saleInvoiceHtml } from '../sales/invoice'
+import { useDocContext, usePrinter } from '../../lib/export'
 import { usePreferences } from '../../stores/preferences'
 
 export interface CartLine {
@@ -29,7 +30,8 @@ function lineAmounts(l: CartLine) {
 export function PosPage() {
   const currency = useCurrency()
   const session = useSession()
-  const shop = useAuth((s) => s.state?.shop)
+  const ctx = useDocContext()
+  const { print } = usePrinter()
   const confirmCartChanges = usePreferences((s) => s.confirmCartChanges)
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
@@ -215,12 +217,17 @@ export function PosPage() {
     void qc.invalidateQueries({ queryKey: ['pos-products'] })
     void qc.invalidateQueries({ queryKey: ['products'] })
     toast.success(`Sale ${sale.invoice_number} completed — ${formatMoney(sale.total, currency)}`)
-    // Print receipt in the background; failures shouldn't block the next sale.
+
+    // Auto-print is off unless the shop turned it on in Settings. When it is on
+    // and printing fails, the cashier is told why — a receipt that silently
+    // never appears is worse than one that visibly failed, because the counter
+    // only finds out when the customer asks for it.
+    if (!ctx.settings.auto_print_on_save) return
     try {
       const detail = await api<{ sale: Sale; items: SaleItem[] }>('sales:get', { id: sale.id })
-      if (shop) await api('print:html', { html: receiptHtml({ shop, sale: detail.sale, items: detail.items }) })
+      await print(saleInvoiceHtml(detail.sale, detail.items, ctx), ctx.settings, { silent: true })
     } catch (e) {
-      toast.warning(`Receipt not printed: ${(e as Error).message}`)
+      toast.error(`Receipt not printed: ${(e as Error).message}. Reprint it from the sale.`)
     }
   }
 

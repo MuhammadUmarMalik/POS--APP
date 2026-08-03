@@ -1,8 +1,8 @@
 // Customers & suppliers: CRUD, dues, payments against balance, ledgers.
 import { getDb } from '../db'
-import { uid, now, AppError, audit } from './helpers'
+import { uid, now, AppError, audit, nextInvoiceNumber } from './helpers'
 import type {
-  Customer, LedgerEntry, Supplier, Session, Payment, Sale, Purchase,
+  Customer, LedgerEntry, Supplier, Session, Payment, PaymentReceipt, Sale, Purchase,
 } from '../../src/shared/types'
 import type { CustomerInput, SupplierInput, PartyPaymentInput } from '../../src/shared/schemas'
 
@@ -43,7 +43,7 @@ export function createCustomer(session: Session, input: CustomerInput): Customer
 export function updateCustomer(session: Session, input: CustomerInput & { id: string }): void {
   const res = getDb()
     .prepare(
-      `UPDATE customers SET name = ?, phone = ?, credit_limit = ?, updated_at = ?, sync_status = 'pending'
+      `UPDATE customers SET name = ?, phone = ?, credit_limit = ?, updated_at = ?
        WHERE id = ? AND shop_id = ?`
     )
     .run(input.name, input.phone || null, input.credit_limit, now(), input.id, session.shopId)
@@ -115,22 +115,58 @@ export function customerLedger(session: Session, id: string): LedgerEntry[] {
   return runningBalance(entries)
 }
 
-export function receiveCustomerPayment(session: Session, input: PartyPaymentInput): void {
+/**
+ * Takes money against a customer's due and returns the receipt for it. The
+ * balances either side of the payment are written to the row rather than read
+ * back later: the customer's due moves with every subsequent sale, so a receipt
+ * reprinted next month must quote the figures from the day it was issued.
+ */
+export function receiveCustomerPayment(session: Session, input: PartyPaymentInput): PaymentReceipt {
   const db = getDb()
   const ts = now()
-  db.transaction(() => {
+  return db.transaction(() => {
     const c = db
-      .prepare('SELECT id, due_balance FROM customers WHERE id = ? AND shop_id = ?')
-      .get(input.party_id, session.shopId) as { id: string; due_balance: number } | undefined
+      .prepare('SELECT id, name, due_balance FROM customers WHERE id = ? AND shop_id = ?')
+      .get(input.party_id, session.shopId) as
+      | { id: string; name: string; due_balance: number }
+      | undefined
     if (!c) throw new AppError('Customer not found')
+
+    const id = uid()
+    const receiptNumber = nextInvoiceNumber(session.shopId, 'customer_payment')
+    const balanceAfter = c.due_balance - input.amount
+
     db.prepare(
-      `INSERT INTO payments (id, shop_id, reference_type, party_type, party_id, amount, method, note, created_by, created_at)
-       VALUES (?, ?, 'customer_payment', 'customer', ?, ?, ?, ?, ?, ?)`
-    ).run(uid(), session.shopId, c.id, input.amount, input.method, input.note ?? null, session.userId, ts)
+      `INSERT INTO payments
+       (id, shop_id, reference_type, party_type, party_id, amount, method, note,
+        receipt_number, balance_before, balance_after, created_by, created_at)
+       VALUES (?, ?, 'customer_payment', 'customer', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id, session.shopId, c.id, input.amount, input.method, input.note ?? null,
+      receiptNumber, c.due_balance, balanceAfter, session.userId, ts
+    )
     db.prepare(
-      "UPDATE customers SET due_balance = due_balance - ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+      "UPDATE customers SET due_balance = due_balance - ?, updated_at = ? WHERE id = ?"
     ).run(input.amount, ts, c.id)
     audit(session, 'customer.payment', { customer_id: c.id, amount: input.amount })
+
+    const cashier = db
+      .prepare('SELECT name FROM users WHERE id = ?')
+      .get(session.userId) as { name: string } | undefined
+
+    return {
+      id,
+      receipt_number: receiptNumber,
+      customer_id: c.id,
+      customer_name: c.name,
+      amount: input.amount,
+      method: input.method,
+      note: input.note ?? null,
+      balance_before: c.due_balance,
+      balance_after: balanceAfter,
+      created_by_name: cashier?.name ?? null,
+      created_at: ts,
+    }
   })()
 }
 
@@ -140,8 +176,10 @@ export function listSuppliers(session: Session, args: { search?: string } = {}):
   const params: unknown[] = [session.shopId]
   let sql = 'SELECT * FROM suppliers WHERE shop_id = ?'
   if (args.search) {
-    sql += ' AND (name LIKE ? OR phone LIKE ?)'
-    params.push(`%${args.search}%`, `%${args.search}%`)
+    // Address is searchable too: "the one on Ferozepur Road" is how a shopkeeper
+    // actually remembers a supplier whose name they wrote down differently.
+    sql += ' AND (name LIKE ? OR phone LIKE ? OR address LIKE ?)'
+    params.push(`%${args.search}%`, `%${args.search}%`, `%${args.search}%`)
   }
   sql += ' ORDER BY name COLLATE NOCASE'
   return getDb().prepare(sql).all(...params) as Supplier[]
@@ -152,20 +190,23 @@ export function createSupplier(session: Session, input: SupplierInput): Supplier
   const ts = now()
   getDb()
     .prepare(
-      `INSERT INTO suppliers (id, shop_id, name, phone, due_balance, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?)`
+      `INSERT INTO suppliers (id, shop_id, name, phone, address, notes, due_balance, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`
     )
-    .run(id, session.shopId, input.name, input.phone || null, ts, ts)
+    .run(id, session.shopId, input.name, input.phone || null, input.address || null, input.notes || null, ts, ts)
   return getDb().prepare('SELECT * FROM suppliers WHERE id = ?').get(id) as Supplier
 }
 
 export function updateSupplier(session: Session, input: SupplierInput & { id: string }): void {
   const res = getDb()
     .prepare(
-      `UPDATE suppliers SET name = ?, phone = ?, updated_at = ?, sync_status = 'pending'
+      `UPDATE suppliers SET name = ?, phone = ?, address = ?, notes = ?, updated_at = ?
        WHERE id = ? AND shop_id = ?`
     )
-    .run(input.name, input.phone || null, now(), input.id, session.shopId)
+    .run(
+      input.name, input.phone || null, input.address || null, input.notes || null,
+      now(), input.id, session.shopId
+    )
   if (res.changes === 0) throw new AppError('Supplier not found')
 }
 
@@ -244,7 +285,7 @@ export function paySupplier(session: Session, input: PartyPaymentInput): void {
        VALUES (?, ?, 'supplier_payment', 'supplier', ?, ?, ?, ?, ?, ?)`
     ).run(uid(), session.shopId, s.id, input.amount, input.method, input.note ?? null, session.userId, ts)
     db.prepare(
-      "UPDATE suppliers SET due_balance = due_balance - ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+      "UPDATE suppliers SET due_balance = due_balance - ?, updated_at = ? WHERE id = ?"
     ).run(input.amount, ts, s.id)
     audit(session, 'supplier.payment', { supplier_id: s.id, amount: input.amount })
   })()

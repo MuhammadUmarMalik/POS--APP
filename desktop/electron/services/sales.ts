@@ -1,7 +1,9 @@
 import { getDb } from '../db'
 import { uid, now, AppError, audit, getStock, writeMovement, nextInvoiceNumber } from './helpers'
+import { allocateFefo, allocateReturn, batchTrackingEnabled } from './batches'
+import { costFiltered } from './permissions'
 import type {
-  HeldSale, Paged, ReturnRecord, Sale, SaleItem, Payment, Session,
+  HeldSale, Paged, ReturnItem, ReturnReceipt, ReturnRecord, Sale, SaleItem, Payment, Session,
 } from '../../src/shared/types'
 import type { CheckoutInput, HoldSaleInput, SaleReturnInput } from '../../src/shared/schemas'
 
@@ -14,11 +16,29 @@ interface ProductRow {
   is_deleted: number
 }
 
+/** The sale this basket key already rang up in this shop, if any. */
+function saleIdForKey(shopId: string, key: string | null | undefined): string | null {
+  if (!key) return null
+  const row = getDb()
+    .prepare('SELECT id FROM sales WHERE shop_id = ? AND idempotency_key = ?')
+    .get(shopId, key) as { id: string } | undefined
+  return row?.id ?? null
+}
+
 export function checkout(session: Session, input: CheckoutInput): Sale {
   const db = getDb()
   const ts = now()
 
   const result = db.transaction(() => {
+    // Duplicate submission guard. The till stamps one key per basket, so a
+    // double-clicked Pay button, a held keystroke, or a retry after a slow reply
+    // arrives here as the same key and gets back the sale that already exists
+    // rather than a second one. The lookup is inside the transaction, and the
+    // UNIQUE index on (shop_id, idempotency_key) is the real enforcement — a
+    // check-then-insert on its own would still leave a window.
+    const replayed = saleIdForKey(session.shopId, input.idempotency_key)
+    if (replayed) return replayed
+
     // Server-side pricing: never trust client prices, only quantities and discounts.
     let subtotal = 0
     let itemDiscounts = 0
@@ -91,8 +111,8 @@ export function checkout(session: Session, input: CheckoutInput): Sale {
     db.prepare(
       `INSERT INTO sales
        (id, shop_id, invoice_number, customer_id, cashier_id, subtotal, discount, tax, total,
-        payment_method, tendered, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?)`
+        payment_method, tendered, status, idempotency_key, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`
     ).run(
       saleId,
       session.shopId,
@@ -105,6 +125,7 @@ export function checkout(session: Session, input: CheckoutInput): Sale {
       total,
       input.payment_method,
       input.payment_method === 'cash' ? input.tendered : null,
+      input.idempotency_key ?? null,
       ts,
       ts
     )
@@ -114,24 +135,34 @@ export function checkout(session: Session, input: CheckoutInput): Sale {
        (id, sale_id, product_id, product_name, quantity, returned_quantity, unit_price, cost_price, discount, tax, total)
        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
     )
+    // With batch tracking on, a line is deducted first-expiry-first-out and may
+    // therefore write more than one ledger row. Off, it writes exactly one, as
+    // it always did.
+    const tracking = batchTrackingEnabled(session.shopId)
     for (const l of lines) {
       insertItem.run(
         l.id, saleId, l.product_id, l.product_name, l.quantity,
         l.unit_price, l.cost_price, l.discount, l.tax, l.total
       )
-      writeMovement({
-        shopId: session.shopId,
-        productId: l.product_id,
-        changeType: 'sale',
-        quantityChange: -l.quantity,
-        referenceId: saleId,
-        userId: session.userId,
-      })
+      const allocations = tracking
+        ? allocateFefo(l.product_id, l.quantity)
+        : [{ batch_id: null, quantity: l.quantity }]
+      for (const a of allocations) {
+        writeMovement({
+          shopId: session.shopId,
+          productId: l.product_id,
+          changeType: 'sale',
+          quantityChange: -a.quantity,
+          referenceId: saleId,
+          userId: session.userId,
+          batchId: a.batch_id,
+        })
+      }
     }
 
     if (input.payment_method === 'credit') {
       db.prepare(
-        "UPDATE customers SET due_balance = due_balance + ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+        "UPDATE customers SET due_balance = due_balance + ?, updated_at = ? WHERE id = ?"
       ).run(total, ts, customerId)
     } else {
       db.prepare(
@@ -145,9 +176,22 @@ export function checkout(session: Session, input: CheckoutInput): Sale {
     }
 
     return saleId
-  })()
+  })
 
-  return getSale(session, result).sale
+  let saleId: string
+  try {
+    saleId = result()
+  } catch (e) {
+    // The UNIQUE index fired, so the sale exists and this submission is the
+    // loser of a race the guard above could not see — another process holding
+    // the same database file, or a future writer. Hand back the sale that won
+    // rather than an error the cashier cannot act on.
+    const won = saleIdForKey(session.shopId, input.idempotency_key)
+    if (!won) throw e
+    saleId = won
+  }
+
+  return getSale(session, saleId).sale
 }
 
 export function listSales(
@@ -225,24 +269,41 @@ export function getSale(
   if (session.role === 'cashier' && sale.cashier_id !== session.userId) {
     throw new AppError('Not allowed')
   }
-  const items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(id) as SaleItem[]
+  // Sale lines carry the cost at the time of sale — the margin on every bill.
+  // Cashiers get the same sale without it.
+  const items = costFiltered(
+    session,
+    db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(id) as SaleItem[]
+  )
   const payments = db
     .prepare("SELECT * FROM payments WHERE reference_id = ? AND reference_type IN ('sale','sale_refund')")
     .all(id) as Payment[]
   return { sale, items, payments }
 }
 
-export function returnSale(session: Session, input: SaleReturnInput, isCancellation = false): void {
+/**
+ * Returns items from a sale and hands back the slip for the counter to print.
+ * The line amounts stored with the event are the ones that sum to the refund
+ * actually paid out — a bill-level discount is spread back over them — so the
+ * printed slip can never disagree with the money that left the drawer.
+ */
+export function returnSale(
+  session: Session,
+  input: SaleReturnInput,
+  isCancellation = false
+): ReturnReceipt {
   const db = getDb()
   const ts = now()
 
-  db.transaction(() => {
+  const trackingOn = batchTrackingEnabled(session.shopId)
+
+  const returnId = db.transaction(() => {
     const { sale, items } = getSale(session, input.sale_id)
     if (sale.status === 'returned') throw new AppError('Sale is already fully returned')
 
     const itemTotalsSum = items.reduce((a, i) => a + i.total, 0)
+    const lines: { product_name: string; quantity: number; amount: number }[] = []
     let refund = 0
-    let returnedSomething = false
 
     for (const ret of input.items) {
       const item = items.find((i) => i.id === ret.sale_item_id)
@@ -253,27 +314,40 @@ export function returnSale(session: Session, input: SaleReturnInput, isCancellat
       }
       const lineRefund = Math.round((item.total * ret.quantity) / item.quantity)
       refund += lineRefund
-      returnedSomething = true
+      lines.push({ product_name: item.product_name, quantity: ret.quantity, amount: lineRefund })
 
       db.prepare('UPDATE sale_items SET returned_quantity = returned_quantity + ? WHERE id = ?').run(
         ret.quantity,
         item.id
       )
-      writeMovement({
-        shopId: session.shopId,
-        productId: item.product_id,
-        changeType: 'sale_return',
-        quantityChange: ret.quantity,
-        reason: input.reason,
-        referenceId: sale.id,
-        userId: session.userId,
-      })
+      // Returned stock goes back to the batches this sale actually took it from.
+      const allocations = trackingOn
+        ? allocateReturn(sale.id, item.product_id, ret.quantity)
+        : [{ batch_id: null, quantity: ret.quantity }]
+      for (const a of allocations) {
+        writeMovement({
+          shopId: session.shopId,
+          productId: item.product_id,
+          changeType: 'sale_return',
+          quantityChange: a.quantity,
+          reason: input.reason,
+          referenceId: sale.id,
+          userId: session.userId,
+          batchId: a.batch_id,
+        })
+      }
     }
-    if (!returnedSomething) throw new AppError('Nothing to return')
+    if (lines.length === 0) throw new AppError('Nothing to return')
 
     // Scale refund down by bill-level discount factor (sale.total already excludes it).
     if (itemTotalsSum > 0 && sale.total < itemTotalsSum) {
-      refund = Math.round((refund * sale.total) / itemTotalsSum)
+      const gross = refund
+      refund = Math.round((gross * sale.total) / itemTotalsSum)
+      for (const l of lines) l.amount = Math.round((l.amount * sale.total) / itemTotalsSum)
+      // Per-line rounding cannot be allowed to drift from the refund paid out;
+      // the last line absorbs whatever paisa the division left over.
+      const drift = refund - lines.reduce((a, l) => a + l.amount, 0)
+      if (drift !== 0) lines[lines.length - 1].amount += drift
     }
 
     const remaining = db
@@ -283,7 +357,7 @@ export function returnSale(session: Session, input: SaleReturnInput, isCancellat
       .get(sale.id) as { left: number }
     const newStatus = remaining.left === 0 ? 'returned' : 'partially_returned'
     db.prepare(
-      "UPDATE sales SET status = ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+      "UPDATE sales SET status = ?, updated_at = ? WHERE id = ?"
     ).run(newStatus, ts, sale.id)
 
     if (input.refund_method === 'cash') {
@@ -298,36 +372,69 @@ export function returnSale(session: Session, input: SaleReturnInput, isCancellat
     } else {
       if (!sale.customer_id) throw new AppError('This sale has no customer — refund in cash instead')
       db.prepare(
-        "UPDATE customers SET due_balance = due_balance - ?, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+        "UPDATE customers SET due_balance = due_balance - ?, updated_at = ? WHERE id = ?"
       ).run(refund, ts, sale.customer_id)
     }
 
+    const id = uid()
     db.prepare(
       `INSERT INTO returns (id, shop_id, kind, reference_id, invoice_number, party_name, refund_amount, refund_method, reason, is_cancellation, created_by, created_at)
        VALUES (?, ?, 'sale', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      uid(), session.shopId, sale.id, sale.invoice_number, sale.customer_name,
+      id, session.shopId, sale.id, sale.invoice_number, sale.customer_name,
       refund, input.refund_method, input.reason, isCancellation ? 1 : 0, session.userId, ts
     )
+    writeReturnItems(id, lines)
 
     audit(session, isCancellation ? 'sale.cancel' : 'sale.return', {
       sale_id: sale.id, refund, reason: input.reason, items: input.items,
     })
+    return id
   })()
+
+  return getReturn(session, returnId)
+}
+
+/** Stores the lines a return event took back. Shared by sale and purchase returns. */
+export function writeReturnItems(
+  returnId: string,
+  lines: { product_name: string; quantity: number; amount: number }[]
+): void {
+  const ins = getDb().prepare(
+    'INSERT INTO return_items (id, return_id, product_name, quantity, amount) VALUES (?, ?, ?, ?, ?)'
+  )
+  for (const l of lines) ins.run(uid(), returnId, l.product_name, l.quantity, l.amount)
+}
+
+/** A single return event with its lines — the source for the printed slip. */
+export function getReturn(session: Session, id: string): ReturnReceipt {
+  const db = getDb()
+  const record = db
+    .prepare(
+      `SELECT r.*, u.name AS created_by_name FROM returns r
+       LEFT JOIN users u ON u.id = r.created_by
+       WHERE r.id = ? AND r.shop_id = ?`
+    )
+    .get(id, session.shopId) as ReturnRecord | undefined
+  if (!record) throw new AppError('Return not found')
+  const items = db
+    .prepare('SELECT * FROM return_items WHERE return_id = ? ORDER BY rowid')
+    .all(id) as ReturnItem[]
+  return { record, items }
 }
 
 /**
  * Cancel Sale = full return of everything still un-returned, in one step.
  * Credit sales roll the amount off the customer's due; paid sales refund cash.
  */
-export function cancelSale(session: Session, args: { id: string; reason?: string }): void {
+export function cancelSale(session: Session, args: { id: string; reason?: string }): ReturnReceipt {
   const { sale, items } = getSale(session, args.id)
   if (sale.status === 'returned') throw new AppError('Sale is already fully returned')
   const remaining = items
     .filter((i) => i.quantity - i.returned_quantity > 0)
     .map((i) => ({ sale_item_id: i.id, quantity: i.quantity - i.returned_quantity }))
   if (remaining.length === 0) throw new AppError('Nothing left to cancel')
-  returnSale(
+  return returnSale(
     session,
     {
       sale_id: sale.id,

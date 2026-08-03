@@ -5,11 +5,13 @@ import { ArrowLeft, Ban, Printer, Undo2 } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { formatMoney } from '../../lib/money'
 import { formatDateTime } from '../../lib/utils'
-import { useAuth, useCurrency, useSession } from '../../stores/auth'
+import { useCurrency, useSession } from '../../stores/auth'
 import type { Payment, Sale, SaleItem } from '../../shared/types'
 import { Button, Card, ConfirmDialog, PageTitle, Spinner } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
-import { receiptHtml } from './receipt'
+import { saleInvoiceHtml } from './invoice'
+import { useDocContext, usePrinter } from '../../lib/export'
+import { ExportBar } from '../../components/ExportBar'
 import { saleStatusBadge } from './SalesPage'
 import { ReturnModal } from './ReturnModal'
 
@@ -17,7 +19,8 @@ export function SaleDetailPage() {
   const { id } = useParams<{ id: string }>()
   const currency = useCurrency()
   const session = useSession()
-  const shop = useAuth((s) => s.state?.shop)
+  const ctx = useDocContext()
+  const { print } = usePrinter()
   const qc = useQueryClient()
   const [returnOpen, setReturnOpen] = useState(false)
   const [cancelOpen, setCancelOpen] = useState(false)
@@ -43,11 +46,12 @@ export function SaleDetailPage() {
   if (isLoading || !data) return <Spinner />
   const { sale, items } = data
 
+  // Reprint goes straight to the configured printer, in the shop's template —
+  // the same document the counter printed when the sale was made.
   const reprint = async () => {
-    if (!shop) return
     try {
-      await api('print:html', { html: receiptHtml({ shop, sale, items }) })
-      toast.success('Receipt sent to printer')
+      const res = await print(saleInvoiceHtml(sale, items, ctx), ctx.settings, { silent: true })
+      toast.success(res.printer ? `Receipt sent to ${res.printer}` : 'Receipt sent to printer')
     } catch (e) {
       toast.error((e as Error).message)
     }
@@ -63,9 +67,14 @@ export function SaleDetailPage() {
       <PageTitle
         actions={
           <>
-            <Button variant="secondary" onClick={reprint}>
-              <Printer size={16} /> Reprint
+            <Button variant="secondary" size="sm" onClick={reprint}>
+              <Printer size={16} /> Reprint receipt
             </Button>
+            <ExportBar
+              module="SalesInvoice"
+              scope={sale.invoice_number}
+              buildHtml={(ctx) => saleInvoiceHtml(sale, items, ctx)}
+            />
             {session?.role === 'admin' && returnable && (
               <>
                 <Button variant="secondary" onClick={() => setReturnOpen(true)}>

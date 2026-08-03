@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banknote, CreditCard, UserRound } from 'lucide-react'
 import { api } from '../../lib/ipc'
@@ -33,6 +33,12 @@ export function PaymentModal({
   const [newCustomerName, setNewCustomerName] = useState('')
   const [allowNegative, setAllowNegative] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  // One key per basket. The main process refuses to ring the same key up twice
+  // and hands back the sale it already created, so a double-clicked Pay button,
+  // a held Enter or a retry after a slow reply cannot charge the customer twice.
+  // `submitting` below is only the UI half of that; the guard that counts is
+  // server-side, because the UI half is exactly what fails under a wedged render.
+  const idempotencyKey = useRef('')
 
   const { data: customers } = useQuery({
     queryKey: ['customers', ''],
@@ -42,6 +48,7 @@ export function PaymentModal({
 
   useEffect(() => {
     if (open) {
+      idempotencyKey.current = crypto.randomUUID()
       setMethod('cash')
       setTendered('')
       setCustomerId('')
@@ -91,6 +98,7 @@ export function PaymentModal({
         customer_id: customerId || null,
         tendered: method === 'cash' ? tenderedPaisa : null,
         allow_negative_stock: allowNegative,
+        idempotency_key: idempotencyKey.current,
       })
       onCompleted(sale)
     } catch (e) {

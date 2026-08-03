@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Undo2 } from 'lucide-react'
+import { ArrowLeft, Printer, Undo2 } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { formatMoney } from '../../lib/money'
 import { formatDateTime } from '../../lib/utils'
@@ -9,12 +9,17 @@ import { useCurrency } from '../../stores/auth'
 import type { Payment, Purchase, PurchaseItem } from '../../shared/types'
 import { Button, Card, Field, Input, Modal, PageTitle, Select, Spinner } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
+import { ExportBar } from '../../components/ExportBar'
+import { useDocContext, usePrinter } from '../../lib/export'
+import { purchaseInvoiceHtml } from './invoice'
 import { purchaseStatusBadge } from './PurchasesPage'
 
 export function PurchaseDetailPage() {
   const { id } = useParams<{ id: string }>()
   const currency = useCurrency()
   const qc = useQueryClient()
+  const ctx = useDocContext()
+  const { print } = usePrinter()
   const [returnOpen, setReturnOpen] = useState(false)
 
   const { data, isLoading } = useQuery({
@@ -28,6 +33,17 @@ export function PurchaseDetailPage() {
   const { purchase, items } = data
   const returnable = items.some((i) => i.quantity > i.returned_quantity)
 
+  // Straight to the configured printer, in the shop's template — the same
+  // document auto-print would have produced when the purchase was saved.
+  const reprint = async () => {
+    try {
+      const res = await print(purchaseInvoiceHtml(purchase, items, ctx), ctx.settings, { silent: true })
+      toast.success(res.printer ? `Invoice sent to ${res.printer}` : 'Invoice sent to printer')
+    } catch (e) {
+      toast.error((e as Error).message)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-3xl">
       <Link to="/purchases" className="mb-3 inline-flex items-center gap-1 text-muted hover:text-ink">
@@ -35,11 +51,21 @@ export function PurchaseDetailPage() {
       </Link>
       <PageTitle
         actions={
-          returnable && (
-            <Button variant="danger" onClick={() => setReturnOpen(true)}>
-              <Undo2 size={16} /> Return items
+          <>
+            <Button variant="secondary" size="sm" onClick={reprint}>
+              <Printer size={16} /> Print invoice
             </Button>
-          )
+            <ExportBar
+              module="PurchaseInvoice"
+              scope={purchase.invoice_number}
+              buildHtml={(ctx) => purchaseInvoiceHtml(purchase, items, ctx)}
+            />
+            {returnable && (
+              <Button variant="danger" size="sm" onClick={() => setReturnOpen(true)}>
+                <Undo2 size={16} /> Return items
+              </Button>
+            )}
+          </>
         }
       >
         {purchase.invoice_number}

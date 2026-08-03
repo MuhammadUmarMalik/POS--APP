@@ -2,9 +2,12 @@ import { useMemo, useState } from 'react'
 import { api } from '../../lib/ipc'
 import { formatMoney } from '../../lib/money'
 import { useCurrency } from '../../stores/auth'
-import type { Sale, SaleItem } from '../../shared/types'
+import { useDocContext, usePrinter } from '../../lib/export'
+import type { ReturnReceipt, Sale, SaleItem } from '../../shared/types'
 import { Button, Field, Input, Modal, Select } from '../../components/ui'
+import { ExportBar } from '../../components/ExportBar'
 import { toast } from '../../components/ui/toast'
+import { returnSlipHtml } from '../returns/slip'
 
 export function ReturnModal({
   sale,
@@ -18,10 +21,14 @@ export function ReturnModal({
   onDone: () => void
 }) {
   const currency = useCurrency()
+  const ctx = useDocContext()
+  const { print } = usePrinter()
   const [qtys, setQtys] = useState<Record<string, number>>({})
   const [reason, setReason] = useState('')
   const [refundMethod, setRefundMethod] = useState<'cash' | 'due'>('cash')
   const [submitting, setSubmitting] = useState(false)
+  // Money has left the drawer: what remains is a slip to hand over, not a form.
+  const [receipt, setReceipt] = useState<ReturnReceipt | null>(null)
 
   const returnable = items.filter((i) => i.quantity > i.returned_quantity)
 
@@ -38,6 +45,18 @@ export function ReturnModal({
     return refund
   }, [qtys, returnable, items, sale.total])
 
+  // The refund is already recorded; a printer fault must not read as a failed
+  // return, so it is reported as exactly what it is and the slip stays on
+  // screen to be printed by hand.
+  const autoPrint = async (r: ReturnReceipt) => {
+    if (!ctx.settings.auto_print_on_save) return
+    try {
+      await print(returnSlipHtml(r, ctx), ctx.settings, { silent: true })
+    } catch (e) {
+      toast.error(`Slip not printed: ${(e as Error).message}. Print it from this window.`)
+    }
+  }
+
   const submit = async () => {
     const selected = returnable
       .filter((i) => (qtys[i.id] ?? 0) > 0)
@@ -48,19 +67,61 @@ export function ReturnModal({
     }
     setSubmitting(true)
     try {
-      await api('sales:return', {
+      const saved = await api<ReturnReceipt>('sales:return', {
         sale_id: sale.id,
         reason: reason.trim() || 'Customer return',
         refund_method: refundMethod,
         items: selected,
       })
-      toast.success(`Return processed — refund ${formatMoney(estimate, currency)}`)
-      onDone()
+      toast.success(`Return processed — refund ${formatMoney(saved.record.refund_amount, currency)}`)
+      setReceipt(saved)
+      void autoPrint(saved)
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  if (receipt) {
+    return (
+      <Modal open onClose={onDone} title={`Return slip — ${receipt.record.invoice_number}`}>
+        <div className="mb-4 rounded-md bg-amber-50 px-4 py-3">
+          <div className="text-xs text-muted">
+            {receipt.record.refund_method === 'cash' ? 'Cash refunded' : 'Credited to balance'}
+          </div>
+          <div className="mt-1 text-2xl font-bold">
+            {formatMoney(receipt.record.refund_amount, currency)}
+          </div>
+        </div>
+        <table className="mb-5 w-full text-left text-sm">
+          <thead className="text-xs uppercase text-muted">
+            <tr>
+              <th className="py-1.5">Item</th>
+              <th className="py-1.5 text-right">Qty</th>
+              <th className="py-1.5 text-right">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {receipt.items.map((i) => (
+              <tr key={i.id} className="border-t border-line">
+                <td className="py-1.5">{i.product_name}</td>
+                <td className="py-1.5 text-right">{i.quantity}</td>
+                <td className="py-1.5 text-right">{formatMoney(i.amount, currency)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex items-center justify-between border-t border-line pt-4">
+          <ExportBar
+            module="ReturnSlip"
+            scope={receipt.record.invoice_number}
+            buildHtml={(docCtx) => returnSlipHtml(receipt, docCtx)}
+          />
+          <Button onClick={onDone}>Done</Button>
+        </div>
+      </Modal>
+    )
   }
 
   return (

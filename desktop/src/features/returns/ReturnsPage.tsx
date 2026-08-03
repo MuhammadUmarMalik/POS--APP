@@ -5,8 +5,10 @@ import { api } from '../../lib/ipc'
 import { formatMoney } from '../../lib/money'
 import { formatDateTime } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
-import type { Paged, ReturnRecord } from '../../shared/types'
-import { Badge, Button, Card, EmptyState, Input, PageTitle, Select, Spinner } from '../../components/ui'
+import type { Paged, ReturnReceipt, ReturnRecord } from '../../shared/types'
+import { Badge, Button, Card, EmptyState, Input, Modal, PageTitle, Select, Spinner } from '../../components/ui'
+import { ExportBar } from '../../components/ExportBar'
+import { returnSlipHtml } from './slip'
 
 const PAGE_SIZE = 25
 
@@ -16,6 +18,9 @@ export function ReturnsPage() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [page, setPage] = useState(1)
+  // A customer who lost the slip, or a supplier disputing a credit note, needs
+  // the same document reprinted — not a new return.
+  const [slipId, setSlipId] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['returns', kind, from, to, page],
@@ -71,6 +76,7 @@ export function ReturnsPage() {
                 <th className="px-4 py-3">Refund via</th>
                 <th className="px-4 py-3">By</th>
                 <th className="px-4 py-3 text-right">Refund</th>
+                <th className="px-4 py-3 text-right">Slip</th>
               </tr>
             </thead>
             <tbody>
@@ -103,6 +109,11 @@ export function ReturnsPage() {
                   <td className="px-4 py-2.5 text-right font-medium">
                     {formatMoney(r.refund_amount, currency)}
                   </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <Button variant="secondary" size="sm" onClick={() => setSlipId(r.id)}>
+                      Reprint
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -123,6 +134,66 @@ export function ReturnsPage() {
           </Button>
         </div>
       )}
+
+      {slipId && <ReturnSlipModal id={slipId} onClose={() => setSlipId(null)} />}
     </div>
+  )
+}
+
+/** Loads one stored return event and offers it for printing, unchanged. */
+function ReturnSlipModal({ id, onClose }: { id: string; onClose: () => void }) {
+  const currency = useCurrency()
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['return', id],
+    queryFn: () => api<ReturnReceipt>('returns:get', { id }),
+  })
+
+  return (
+    <Modal open onClose={onClose} title="Return slip">
+      {isLoading ? (
+        <Spinner />
+      ) : error || !data ? (
+        <EmptyState message={(error as Error)?.message ?? 'This return could not be loaded.'} />
+      ) : (
+        <>
+          <div className="mb-4 flex justify-between rounded-md bg-slate-50 px-4 py-3">
+            <div>
+              <div className="font-mono text-xs text-muted">{data.record.invoice_number}</div>
+              <div className="text-sm">{data.record.party_name ?? '—'}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-muted">{formatDateTime(data.record.created_at)}</div>
+              <div className="font-semibold">{formatMoney(data.record.refund_amount, currency)}</div>
+            </div>
+          </div>
+          <table className="mb-5 w-full text-left text-sm">
+            <thead className="text-xs uppercase text-muted">
+              <tr>
+                <th className="py-1.5">Item</th>
+                <th className="py-1.5 text-right">Qty</th>
+                <th className="py-1.5 text-right">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((i) => (
+                <tr key={i.id} className="border-t border-line">
+                  <td className="py-1.5">{i.product_name}</td>
+                  <td className="py-1.5 text-right">{i.quantity}</td>
+                  <td className="py-1.5 text-right">{formatMoney(i.amount, currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex items-center justify-between border-t border-line pt-4">
+            <ExportBar
+              module="ReturnSlip"
+              scope={data.record.invoice_number}
+              buildHtml={(docCtx) => returnSlipHtml(data, docCtx)}
+            />
+            <Button variant="secondary" onClick={onClose}>Close</Button>
+          </div>
+        </>
+      )}
+    </Modal>
   )
 }
