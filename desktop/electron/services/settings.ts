@@ -24,7 +24,7 @@ export function updateShop(session: Session, input: ShopSettingsInput): Shop {
   db.prepare(
     `UPDATE shops SET name = ?, currency = ?, tax_percent = ?, receipt_footer = ?,
        owner_name = ?, phone = ?, email = ?, address = ?, city = ?, business_type = ?,
-       ntn = ?, strn = ?, updated_at = ?, sync_status = 'pending'
+       ntn = ?, strn = ?, updated_at = ?
      WHERE id = ?`
   ).run(
     input.name, input.currency, input.tax_percent, input.receipt_footer,
@@ -38,8 +38,8 @@ export function updateShop(session: Session, input: ShopSettingsInput): Shop {
 
 // ---- shop logo -----------------------------------------------------------------
 // Stored beside product images so the existing pos-img:// protocol serves it to
-// receipts and the renderer. local_logo_path is the file name; logo_url is the
-// cloud copy, filled in by sync when the cloud backend stores it.
+// receipts and the renderer. local_logo_path is the file name; logo_url is a
+// legacy column left over from an earlier hosted build and is never written now.
 
 const LOGO_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp'])
 const LOGO_MAX_BYTES = 2 * 1024 * 1024
@@ -67,7 +67,7 @@ export async function uploadLogo(session: Session): Promise<{ saved: boolean; sh
     .prepare('SELECT local_logo_path FROM shops WHERE id = ?')
     .get(session.shopId) as { local_logo_path: string | null }
   db.prepare(
-    "UPDATE shops SET local_logo_path = ?, logo_url = NULL, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+    "UPDATE shops SET local_logo_path = ?, logo_url = NULL, updated_at = ? WHERE id = ?"
   ).run(name, now(), session.shopId)
   if (old.local_logo_path) deleteImageFiles([old.local_logo_path])
 
@@ -81,7 +81,7 @@ export function removeLogo(session: Session): Shop {
     .prepare('SELECT local_logo_path FROM shops WHERE id = ?')
     .get(session.shopId) as { local_logo_path: string | null }
   db.prepare(
-    "UPDATE shops SET local_logo_path = NULL, logo_url = NULL, updated_at = ?, sync_status = 'pending' WHERE id = ?"
+    "UPDATE shops SET local_logo_path = NULL, logo_url = NULL, updated_at = ? WHERE id = ?"
   ).run(now(), session.shopId)
   if (old.local_logo_path) deleteImageFiles([old.local_logo_path])
   audit(session, 'shop.logo_remove', {})

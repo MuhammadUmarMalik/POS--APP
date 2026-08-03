@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Pencil, Trash2, History, Upload, Download, Package } from 'lucide-react'
+import { Plus, Pencil, Trash2, History, Upload, Download, Package, Tags } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { formatMoney } from '../../lib/money'
 import { useCurrency } from '../../stores/auth'
@@ -10,6 +10,7 @@ import {
 } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
 import { ProductForm } from './ProductForm'
+import { CategoriesModal } from './CategoriesModal'
 import { MovementsModal } from '../inventory/MovementsModal'
 
 interface ImportResult {
@@ -35,6 +36,7 @@ export function ProductsPage() {
   const [deleting, setDeleting] = useState<ProductWithStock | null>(null)
   const [movementsFor, setMovementsFor] = useState<ProductWithStock | null>(null)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
+  const [categoriesOpen, setCategoriesOpen] = useState(false)
   const [busy, setBusy] = useState<'import' | 'export' | null>(null)
 
   const { data: products, isLoading } = useQuery({
@@ -101,6 +103,9 @@ export function ProductsPage() {
       <PageTitle
         actions={
           <>
+            <Button variant="secondary" onClick={() => setCategoriesOpen(true)}>
+              <Tags size={15} /> Categories
+            </Button>
             <Button variant="secondary" onClick={doImport} loading={busy === 'import'}>
               <Upload size={15} /> Import Excel
             </Button>
@@ -178,7 +183,7 @@ export function ProductsPage() {
                   <td className="px-4 py-2.5 font-mono text-xs text-muted">{p.barcode ?? '—'}</td>
                   <td className="px-4 py-2.5 text-muted">{p.category_name ?? '—'}</td>
                   <td className="px-4 py-2.5 text-muted">{p.brand_name ?? '—'}</td>
-                  <td className="px-4 py-2.5 text-right">{formatMoney(p.cost_price, currency)}</td>
+                  <td className="px-4 py-2.5 text-right">{formatMoney(p.cost_price ?? 0, currency)}</td>
                   <td className="px-4 py-2.5 text-right font-medium">{formatMoney(p.sale_price, currency)}</td>
                   <td className="px-4 py-2.5 text-right">
                     <Badge tone={stockTone(p)}>{p.stock} {p.unit}</Badge>
@@ -252,6 +257,7 @@ export function ProductsPage() {
       {movementsFor && (
         <MovementsModal product={movementsFor} onClose={() => setMovementsFor(null)} />
       )}
+      {categoriesOpen && <CategoriesModal onClose={() => setCategoriesOpen(false)} />}
     </div>
   )
 }

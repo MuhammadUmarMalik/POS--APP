@@ -6,22 +6,41 @@ import {
   Boxes,
   CheckCircle2,
   CircleAlert,
+  Coins,
   PackagePlus,
   Plus,
+  Receipt,
   ShieldCheck,
   ShoppingCart,
   Tags,
+  TrendingUp,
+  Wallet,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { api } from '../../lib/ipc'
-import { useSession } from '../../stores/auth'
+import { useCurrency, useSession } from '../../stores/auth'
+import { formatMoney } from '../../lib/money'
 import { Badge, Button, Card, Spinner } from '../../components/ui'
-import { cn } from '../../lib/utils'
+import { cn, formatDateTime } from '../../lib/utils'
 
 interface DashboardOverview {
   stockHealth: { total: number; healthy: number; low: number; out: number }
   categories: { name: string; count: number }[]
   lowStock: { id: string; name: string; min_stock_alert: number; stock: number }[]
+  // Money. The main process only fills these in for a session allowed to see
+  // cost, so they are optional here rather than assumed present.
+  today?: { count: number; total: number; refunds: number; grossProfit: number }
+  stockValue?: number
+  recentSales?: {
+    id: string
+    invoice_number: string
+    created_at: string
+    total: number
+    payment_method: string
+    status: string
+    customer_name: string | null
+    item_count: number
+  }[]
 }
 
 function greeting() {
@@ -39,7 +58,8 @@ function InventoryStat({
   tone,
 }: {
   label: string
-  value: number
+  /** Counts come through as numbers, money pre-formatted as a string. */
+  value: ReactNode
   detail: string
   icon: ReactNode
   tone: 'blue' | 'green' | 'amber' | 'red'
@@ -152,8 +172,48 @@ function CategoryChart({ categories }: { categories: DashboardOverview['categori
   )
 }
 
+function RecentSales({ sales }: { sales: NonNullable<DashboardOverview['recentSales']> }) {
+  const currency = useCurrency()
+
+  return (
+    <Card className="p-0">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <h2 className="flex items-center gap-2 font-semibold">
+          <Receipt size={16} className="text-primary" /> Recent sales
+        </h2>
+        <Link to="/sales" className="text-xs text-primary hover:underline">All sales</Link>
+      </div>
+      {sales.length === 0 ? (
+        <div className="p-8 text-center text-muted">No sales recorded yet.</div>
+      ) : (
+        <table className="w-full text-left text-sm">
+          <tbody>
+            {sales.map((sale) => (
+              <tr key={sale.id} className="border-t border-line first:border-t-0 hover:bg-slate-50">
+                <td className="px-4 py-2.5">
+                  <Link to={`/sales/${sale.id}`} className="font-medium text-primary hover:underline">
+                    {sale.invoice_number}
+                  </Link>
+                  {sale.status !== 'completed' ? (
+                    <span className="ml-2"><Badge tone="slate">{sale.status}</Badge></span>
+                  ) : null}
+                </td>
+                <td className="px-4 py-2.5 text-muted">{sale.customer_name ?? 'Walk-in'}</td>
+                <td className="px-4 py-2.5 text-muted">{sale.item_count} item{sale.item_count === 1 ? '' : 's'}</td>
+                <td className="px-4 py-2.5 text-muted">{formatDateTime(sale.created_at)}</td>
+                <td className="px-4 py-2.5 text-right font-semibold">{formatMoney(sale.total, currency)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
+  )
+}
+
 export function DashboardPage() {
   const session = useSession()
+  const currency = useCurrency()
   const isAdmin = session?.role === 'admin'
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard-overview'],
@@ -167,6 +227,7 @@ export function DashboardPage() {
   const lowStock = data?.lowStock ?? []
   const stockHealth = data?.stockHealth ?? { total: 0, healthy: 0, low: 0, out: 0 }
   const categories = data?.categories ?? []
+  const today = data?.today
 
   return (
     <div>
@@ -216,8 +277,9 @@ export function DashboardPage() {
           <div>
             <h2 className="font-semibold">Financial information is protected</h2>
             <p className="mt-1 text-sm text-muted">
-              Sales totals, profit, dues and payment-method details are not displayed on the dashboard.
-              {isAdmin ? ' Open Reports when you need to review them.' : ' Only administrators can open financial reports.'}
+              {isAdmin
+                ? 'The takings, profit and stock value below are visible to administrators only. Staff signed in as cashiers see the till and their own sales, never these figures.'
+                : 'Sales totals, profit, dues and payment-method details are not displayed on the dashboard. Only administrators can open financial reports.'}
             </p>
           </div>
         </div>
@@ -232,6 +294,39 @@ export function DashboardPage() {
 
       {isAdmin ? (
         <div className="space-y-4">
+          {/* Money first — it is the question a shop owner opens the app to answer.
+              The figures arrive already netted of today's refunds, so they match
+              the Profit & Loss report for the same day. */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <InventoryStat
+              label="Today's sales"
+              value={formatMoney(today?.total ?? 0, currency)}
+              detail={
+                today
+                  ? `${today.count} sale${today.count === 1 ? '' : 's'}${
+                      today.refunds > 0 ? ` · ${formatMoney(today.refunds, currency)} refunded` : ''
+                    }`
+                  : 'no sales yet'
+              }
+              icon={<Coins size={19} />}
+              tone="green"
+            />
+            <InventoryStat
+              label="Today's gross profit"
+              value={formatMoney(today?.grossProfit ?? 0, currency)}
+              detail="takings less cost of goods sold"
+              icon={<TrendingUp size={19} />}
+              tone="blue"
+            />
+            <InventoryStat
+              label="Stock value"
+              value={formatMoney(data?.stockValue ?? 0, currency)}
+              detail="on hand, at latest purchase cost"
+              icon={<Wallet size={19} />}
+              tone="amber"
+            />
+          </div>
+
           <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
             <InventoryStat
               label="Total products"
@@ -262,6 +357,8 @@ export function DashboardPage() {
               tone="red"
             />
           </div>
+
+          <RecentSales sales={data?.recentSales ?? []} />
 
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
             <StockHealthChart health={stockHealth} />

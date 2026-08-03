@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus, Printer, ShieldCheck, Users as UsersIcon, UserX, UserCheck } from 'lucide-react'
+import { KeyRound, Plus, ShieldCheck, Users as UsersIcon, UserX, UserCheck } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { useSession } from '../../stores/auth'
 import type { User } from '../../shared/types'
@@ -12,21 +12,23 @@ import { toast } from '../../components/ui/toast'
 import { SettingsLayout, SettingsSection } from './components/SettingsLayout'
 import { ShopProfileSettings } from './components/ShopProfileSettings'
 import { SubscriptionStatusCard } from './components/SubscriptionStatusCard'
-import { CloudSyncSettings } from './components/CloudSyncSettings'
-import { PlaceholderSettingsCard } from './components/PlaceholderSettingsCard'
+import { GoogleDriveBackupSettings } from './components/GoogleDriveBackupSettings'
+import { LocalBackupSettings } from './components/LocalBackupSettings'
+import { AutoLocalBackupSettings } from './components/AutoLocalBackupSettings'
+import { PrinterReceiptSettings } from './components/PrinterReceiptSettings'
 import { AppPreferencesSettings } from './components/AppPreferencesSettings'
+import { BatchExpirySettings } from './components/BatchExpirySettings'
 
 export function SettingsPage() {
   return (
     <SettingsLayout>
       <ShopProfileSettings />
       <SubscriptionStatusCard />
-      <CloudSyncSettings />
-      <PlaceholderSettingsCard
-        title="Printer & Receipt Settings"
-        description="Printer selection, paper size and receipt layout options"
-        icon={<Printer size={18} />}
-      />
+      <LocalBackupSettings />
+      <AutoLocalBackupSettings />
+      <GoogleDriveBackupSettings />
+      <PrinterReceiptSettings />
+      <BatchExpirySettings />
       <UsersSection />
       <AppPreferencesSettings />
       <SecuritySection />

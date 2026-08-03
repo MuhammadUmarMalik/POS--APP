@@ -73,7 +73,7 @@ export function updateExpense(session: Session, input: ExpenseInput & { id: stri
   if (!cat) throw new AppError('Expense category not found')
   const res = db
     .prepare(
-      `UPDATE expenses SET category_id = ?, amount = ?, note = ?, expense_date = ?, updated_at = ?, sync_status = 'pending'
+      `UPDATE expenses SET category_id = ?, amount = ?, note = ?, expense_date = ?, updated_at = ?
        WHERE id = ? AND shop_id = ?`
     )
     .run(input.category_id, input.amount, input.note?.trim() || null, input.expense_date, now(), input.id, session.shopId)

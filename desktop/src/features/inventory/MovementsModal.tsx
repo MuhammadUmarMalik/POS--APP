@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../lib/ipc'
 import { formatDateTime } from '../../lib/utils'
 import type { InventoryLog, ProductWithStock } from '../../shared/types'
+import { adjustmentReasonLabel } from '../../shared/schemas'
 import { Badge, Modal, Spinner, EmptyState } from '../../components/ui'
 
 const TYPE_LABEL: Record<string, { label: string; tone: 'green' | 'red' | 'blue' | 'amber' | 'slate' }> = {
@@ -52,7 +53,7 @@ export function MovementsModal({
                   <td className={`py-2 text-right font-semibold ${m.quantity_change < 0 ? 'text-danger' : 'text-success'}`}>
                     {m.quantity_change > 0 ? '+' : ''}{m.quantity_change}
                   </td>
-                  <td className="py-2 text-muted">{m.reason ?? '—'}</td>
+                  <td className="py-2 text-muted">{adjustmentReasonLabel(m.reason) || '—'}</td>
                   <td className="py-2 text-muted">{m.created_by_name ?? '—'}</td>
                 </tr>
               )

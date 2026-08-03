@@ -7,7 +7,7 @@ import { formatMoney, toPaisa } from '../../lib/money'
 import { useCurrency } from '../../stores/auth'
 import type { Payment, Purchase, Supplier } from '../../shared/types'
 import {
-  Badge, Button, Card, EmptyState, Field, Input, Modal, PageTitle, Select, Spinner,
+  Badge, Button, Card, EmptyState, Field, Input, Modal, PageTitle, Select, Spinner, Textarea,
 } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
 import { formatDateTime } from '../../lib/utils'
@@ -40,7 +40,7 @@ export function SuppliersPage() {
       </PageTitle>
 
       <Card className="mb-4 p-3">
-        <Input placeholder="Search name or phone…" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-sm" />
+        <Input placeholder="Search name, phone or address…" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-sm" />
       </Card>
 
       <Card className="overflow-x-auto p-0">
@@ -54,6 +54,7 @@ export function SuppliersPage() {
               <tr>
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Phone</th>
+                <th className="px-4 py-3">Address</th>
                 <th className="px-4 py-3 text-right">We owe</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
@@ -63,6 +64,9 @@ export function SuppliersPage() {
                 <tr key={s.id} className="border-t border-line hover:bg-slate-50">
                   <td className="px-4 py-2.5 font-medium">{s.name}</td>
                   <td className="px-4 py-2.5 text-muted">{s.phone ?? '—'}</td>
+                  <td className="max-w-56 truncate px-4 py-2.5 text-muted" title={s.address ?? undefined}>
+                    {s.address ?? '—'}
+                  </td>
                   <td className="px-4 py-2.5 text-right">
                     {s.due_balance > 0 ? (
                       <Badge tone="amber">{formatMoney(s.due_balance, currency)}</Badge>
@@ -109,22 +113,41 @@ function SupplierForm({
   supplier: Supplier | null
 }) {
   const qc = useQueryClient()
-  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<{ name: string; phone: string }>()
+  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } =
+    useForm<{ name: string; phone: string; address: string; notes: string }>()
 
   useEffect(() => {
-    if (open) reset(supplier ? { name: supplier.name, phone: supplier.phone ?? '' } : { name: '', phone: '' })
+    if (open) {
+      reset(
+        supplier
+          ? {
+              name: supplier.name,
+              phone: supplier.phone ?? '',
+              address: supplier.address ?? '',
+              notes: supplier.notes ?? '',
+            }
+          : { name: '', phone: '', address: '', notes: '' }
+      )
+    }
   }, [open, supplier, reset])
 
   const onSubmit = handleSubmit(async (v) => {
+    const payload = {
+      name: v.name,
+      phone: v.phone || null,
+      address: v.address.trim() || null,
+      notes: v.notes.trim() || null,
+    }
     try {
       if (supplier) {
-        await api('suppliers:update', { id: supplier.id, name: v.name, phone: v.phone || null })
+        await api('suppliers:update', { id: supplier.id, ...payload })
         toast.success('Supplier updated')
       } else {
-        await api('suppliers:create', { name: v.name, phone: v.phone || null })
+        await api('suppliers:create', payload)
         toast.success('Supplier added')
       }
       void qc.invalidateQueries({ queryKey: ['suppliers'] })
+      void qc.invalidateQueries({ queryKey: ['supplier-detail'] })
       onClose()
     } catch (e) {
       toast.error((e as Error).message)
@@ -139,6 +162,12 @@ function SupplierForm({
         </Field>
         <Field label="Phone">
           <Input {...register('phone')} />
+        </Field>
+        <Field label="Address" hint="Where to send a return or a driver">
+          <Textarea {...register('address')} rows={2} placeholder="Shop / street / city" />
+        </Field>
+        <Field label="Notes" hint="Delivery days, payment terms, the rep's name…">
+          <Textarea {...register('notes')} rows={3} placeholder="Anything worth remembering" />
         </Field>
         <div className="flex justify-between pt-2">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
@@ -169,6 +198,23 @@ function SupplierDetailModal({ supplier, onClose }: { supplier: Supplier; onClos
               {formatMoney(data.supplier.due_balance, currency)}
             </div>
           </div>
+
+          <div className="grid grid-cols-2 gap-4 rounded-md bg-slate-50 px-4 py-3 text-sm">
+            <div>
+              <div className="text-xs uppercase text-muted">Phone</div>
+              <div>{data.supplier.phone || '—'}</div>
+            </div>
+            <div>
+              <div className="text-xs uppercase text-muted">Address</div>
+              {/* Kept as typed, line breaks and all — an address is not one line. */}
+              <div className="whitespace-pre-wrap">{data.supplier.address || '—'}</div>
+            </div>
+            <div className="col-span-2">
+              <div className="text-xs uppercase text-muted">Notes</div>
+              <div className="whitespace-pre-wrap">{data.supplier.notes || '—'}</div>
+            </div>
+          </div>
+
           <div>
             <h3 className="mb-2 font-semibold">Recent purchases</h3>
             {data.purchases.length === 0 ? (
