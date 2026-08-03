@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { BadgeCheck, MessageCircle, RefreshCw } from 'lucide-react'
+import { BadgeCheck, Infinity as InfinityIcon, MessageCircle, RefreshCw } from 'lucide-react'
 import { api } from '../../../lib/ipc'
 import { useAuth } from '../../../stores/auth'
 import { formatDate } from '../../../lib/utils'
 import {
-  PLAN_LABELS, SUBSCRIPTION_STATUS_LABELS, shouldLockSales, whatsappSupportUrl,
-  type SubscriptionStatus,
+  LIFETIME_NOTE, PLAN_LABELS, SUBSCRIPTION_STATUS_LABELS, expiryWarningMessage, shouldLockSales,
+  whatsappSupportUrl, type ExpiryWarning, type SubscriptionStatus,
 } from '../../../shared/subscription'
 import type { SubscriptionView } from '../../../shared/types'
 import { Badge, Button, Spinner } from '../../../components/ui'
@@ -22,6 +22,15 @@ const STATUS_TONE: Record<SubscriptionStatus, 'green' | 'amber' | 'red' | 'blue'
   lifetime_active: 'green',
   suspended: 'red',
   pending_verification: 'amber',
+}
+
+// How urgent the "your membership is running out" banner looks. Only the last
+// three days go red — a warning that shouts a week out stops being read.
+const WARNING_STYLE: Record<Exclude<ExpiryWarning, 'none'>, string> = {
+  week: 'border-blue-200 bg-blue-50 text-blue-900',
+  soon: 'border-amber-200 bg-amber-50 text-amber-900',
+  last_day: 'border-red-200 bg-red-50 text-red-900',
+  expired: 'border-red-200 bg-red-50 text-red-900',
 }
 
 function Row({ label, value }: { label: string; value: string | null }) {
@@ -81,6 +90,10 @@ export function SubscriptionStatusCard() {
   const s = subscription
   const locked = shouldLockSales(s.status)
   const isTrial = s.plan_type === 'trial'
+  const days = s.remaining_membership_days
+  // A lifetime plan has no end date, so no countdown and no warning is ever shown.
+  const warning = s.is_lifetime || locked ? 'none' : s.expiry_warning
+  const warningText = expiryWarningMessage(warning, days)
 
   return (
     <SettingsSection
@@ -91,7 +104,23 @@ export function SubscriptionStatusCard() {
     >
       {locked && (
         <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-900">
-          Your trial has expired. Your data is safe, but new sales are locked until activation.
+          {isTrial
+            ? 'Your trial has expired. Your data is safe, but new sales are locked until activation.'
+            : 'Your membership has ended. Your data is safe, but new sales are locked until you renew.'}
+        </div>
+      )}
+      {s.is_lifetime && (
+        <div className="mb-4 flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-900">
+          <InfinityIcon size={16} className="shrink-0" />
+          <span>
+            <strong>{LIFETIME_NOTE}.</strong> Your membership never expires — there is nothing to
+            renew and nothing to pay again.
+          </span>
+        </div>
+      )}
+      {warningText && warning !== 'none' && (
+        <div className={`mb-4 rounded-md border px-3 py-2.5 text-sm ${WARNING_STYLE[warning]}`}>
+          {warningText}
         </div>
       )}
       {s.status === 'pending_verification' && (
@@ -114,13 +143,26 @@ export function SubscriptionStatusCard() {
         <Row
           label="Membership ends"
           value={
-            s.plan_type === 'lifetime' && s.membership_started_at
-              ? 'Never (lifetime)'
+            s.is_lifetime
+              ? 'Never expires'
               : s.membership_ends_at
                 ? formatDate(s.membership_ends_at)
                 : null
           }
         />
+        {/* No countdown on lifetime: there is nothing to count down to. */}
+        {!s.is_lifetime && s.membership_ends_at && (
+          <Row
+            label="Days remaining"
+            value={days > 0 ? `${days} ${days === 1 ? 'day' : 'days'}` : 'Expired'}
+          />
+        )}
+        {s.renewal_count > 0 && (
+          <Row
+            label="Renewals"
+            value={`${s.renewal_count}${s.last_renewed_at ? ` — last on ${formatDate(s.last_renewed_at)}` : ''}`}
+          />
+        )}
         <Row label="License key" value={s.license_key_masked} />
         <Row
           label="Activation method"
@@ -133,12 +175,14 @@ export function SubscriptionStatusCard() {
         <Row label="Payment reference" value={s.payment_reference} />
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={() => setActivateOpen(true)}>
-          {s.status === 'membership_active' || s.status === 'membership_expired'
-            ? 'Renew Membership'
-            : 'Activate Membership'}
-        </Button>
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Lifetime has no renewal at all — the button is not shown, because a
+            disabled "Renew" still invites a shopkeeper to go looking for a key. */}
+        {!s.is_lifetime && (
+          <Button onClick={() => setActivateOpen(true)}>
+            {s.renewal_available ? 'Renew Membership' : 'Activate Membership'}
+          </Button>
+        )}
         <Button variant="secondary" onClick={contactSupport}>
           <MessageCircle size={15} /> Contact Support
         </Button>
@@ -149,7 +193,11 @@ export function SubscriptionStatusCard() {
         )}
       </div>
 
-      <ActivateMembershipModal open={activateOpen} onClose={() => setActivateOpen(false)} />
+      <ActivateMembershipModal
+        open={activateOpen}
+        renewal={s.renewal_available}
+        onClose={() => setActivateOpen(false)}
+      />
     </SettingsSection>
   )
 }

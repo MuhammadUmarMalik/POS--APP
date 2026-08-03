@@ -3,21 +3,30 @@ import { KeyRound, ImageUp, MessageCircle, CheckCircle2 } from 'lucide-react'
 import { api } from '../../../lib/ipc'
 import { useAuth } from '../../../stores/auth'
 import {
-  LICENSE_KEY_RE, formatLicenseKeyInput, whatsappSupportUrl,
+  LICENSE_KEY_RE, PLAN_LABELS, formatLicenseKeyInput, whatsappSupportUrl,
 } from '../../../shared/subscription'
 import type { SubscriptionView } from '../../../shared/types'
 import { Button, Field, Input, Modal } from '../../../components/ui'
 import { toast } from '../../../components/ui/toast'
 import { useInvalidateSubscription } from '../useSubscription'
-import { cn } from '../../../lib/utils'
+import { cn, formatDate } from '../../../lib/utils'
 
 type Tab = 'key' | 'proof' | 'support'
 
-export function ActivateMembershipModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function ActivateMembershipModal({
+  open,
+  onClose,
+  renewal = false,
+}: {
+  open: boolean
+  onClose: () => void
+  /** The shop already has a paid plan, so this entry extends it rather than starts it. */
+  renewal?: boolean
+}) {
   const [tab, setTab] = useState<Tab>('key')
 
   return (
-    <Modal open={open} onClose={onClose} title="Activate membership" wide>
+    <Modal open={open} onClose={onClose} title={renewal ? 'Renew membership' : 'Activate membership'} wide>
       <div className="mb-5 grid grid-cols-3 gap-2">
         {(
           [
@@ -41,14 +50,14 @@ export function ActivateMembershipModal({ open, onClose }: { open: boolean; onCl
         ))}
       </div>
 
-      {tab === 'key' && <LicenseKeyTab onDone={onClose} />}
+      {tab === 'key' && <LicenseKeyTab onDone={onClose} renewal={renewal} />}
       {tab === 'proof' && <PaymentProofTab onDone={onClose} />}
       {tab === 'support' && <SupportTab />}
     </Modal>
   )
 }
 
-function LicenseKeyTab({ onDone }: { onDone: () => void }) {
+function LicenseKeyTab({ onDone, renewal }: { onDone: () => void; renewal: boolean }) {
   const [key, setKey] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -65,9 +74,11 @@ function LicenseKeyTab({ onDone }: { onDone: () => void }) {
       const view = await api<SubscriptionView>('subscription:activate', { license_key: key })
       invalidate()
       toast.success(
-        view.status === 'lifetime_active'
-          ? 'Lifetime membership activated — thank you!'
-          : 'Membership activated — thank you!'
+        view.is_lifetime
+          ? 'Lifetime membership activated — it never expires. Thank you!'
+          : `${PLAN_LABELS[view.plan_type]} ${renewal ? 'renewed' : 'activated'} — valid until ${
+              view.membership_ends_at ? formatDate(view.membership_ends_at) : 'further notice'
+            }. Thank you!`
       )
       onDone()
     } catch (e) {
@@ -80,9 +91,16 @@ function LicenseKeyTab({ onDone }: { onDone: () => void }) {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted">
-        Enter the license key you received after purchase. Keys are verified online when internet
-        is available, otherwise validated offline.
+        Enter the license key you received after purchase. The key itself carries the plan —
+        monthly, yearly or lifetime — so there is nothing else to choose. Keys are verified online
+        when internet is available, otherwise validated offline.
       </p>
+      {renewal && (
+        <p className="rounded-md border border-line bg-slate-50 px-3 py-2 text-sm text-muted">
+          Renewing early costs you nothing: the new term is added on top of the days you have left.
+          A renewal needs a new key — a key already used on this computer cannot be entered again.
+        </p>
+      )}
       <Field label="License key" required error={error ?? undefined}>
         <Input
           value={key}

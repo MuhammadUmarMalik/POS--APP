@@ -11,6 +11,13 @@
     "dist",
     "dist-electron"
   ],
+  "extraResources": [
+    {
+      "from": "resources",
+      "to": ".",
+      "filter": ["*.json"]
+    }
+  ],
   "mac": {
     "target": [
       "dmg"
@@ -26,7 +33,34 @@
         ]
       }
     ],
-    "artifactName": "${productName}-Windows-${version}-Setup.${ext}"
+    "artifactName": "${productName}-Windows-${version}-Setup.${ext}",
+
+    // ---- Code signing ----
+    // BLOCKED: the installer ships UNSIGNED. Every shop installing it gets a
+    // SmartScreen "unknown publisher" warning, and some corporate machines and
+    // antivirus products block it outright. Fixing that needs a certificate,
+    // which is a purchase and a business decision, not a code change — see
+    // docs/OPEN-DECISIONS.md and the README's packaging section.
+    //
+    // The build is wired for it. electron-builder signs automatically the
+    // moment credentials are present in the build environment and skips signing
+    // silently when they are not, so the two settings below are inert today and
+    // correct the day a certificate exists:
+    //
+    //   CSC_LINK          path or base64 of a .pfx  (OV, file-based)
+    //   CSC_KEY_PASSWORD  its password
+    //
+    // For a hardware token or cloud HSM (mandatory for certificates issued
+    // since June 2023) add "certificateSubjectName" or a custom "sign" hook
+    // pointing at the CA's signing tool. Never commit a certificate or a
+    // password to this repository.
+    "signingHashAlgorithms": [
+      "sha256"
+    ],
+    // Without a timestamp the signature stops validating the day the
+    // certificate expires, retroactively breaking installers already in the
+    // field. With one, they stay valid forever.
+    "rfc3161TimeStampServer": "http://timestamp.digicert.com"
   },
   "nsis": {
     "oneClick": false,
