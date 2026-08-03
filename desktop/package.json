@@ -8,7 +8,13 @@
     "build": "tsc && vite build && electron-builder",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "genkey": "node scripts/generate-license-key.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:main": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run typecheck && npm run build:main && npm run test:smoke",
+    "test:smoke": "node scripts/run-smoke.mjs",
+    "verify:export": "esbuild scripts/export-verify.ts --bundle --platform=node --format=esm --outfile=scripts/.export-verify.mjs --log-level=error && node scripts/.export-verify.mjs",
+    "verify:print": "node scripts/print-verify.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
