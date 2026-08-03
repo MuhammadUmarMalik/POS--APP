@@ -1,13 +1,21 @@
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Store } from 'lucide-react'
+import { CloudDownload, HardDriveDownload, Store } from 'lucide-react'
 import { BUSINESS_TYPES, setupSchema, type SetupInput } from '../../shared/schemas'
+import { api } from '../../lib/ipc'
+import type { LocalRestoreResult } from '../../shared/types'
 import { useAuth } from '../../stores/auth'
+import { useRestore } from '../../stores/restore'
 import { Button, Card, Field, Input, PasswordInput, Select } from '../../components/ui'
 import { toast } from '../../components/ui/toast'
+import { DriveRecovery } from './DriveRecovery'
 
 export function SetupWizard() {
+  const [showRecovery, setShowRecovery] = useState(false)
+  const [restoring, setRestoring] = useState(false)
   const setup = useAuth((s) => s.setup)
+  const setRestorePhase = useRestore((s) => s.setPhase)
   const {
     register,
     handleSubmit,
@@ -30,6 +38,30 @@ export function SetupWizard() {
     }
   })
 
+  // No confirmation step here: nothing exists yet to overwrite, and picking the
+  // file in the OS dialog is itself the deliberate act.
+  const restoreFromFile = async () => {
+    setRestoring(true)
+    setRestorePhase('restoring')
+    try {
+      const result = await api<LocalRestoreResult>('localRecovery:restore')
+      if (result.restored) {
+        // Left in place: the app is about to restart under this screen.
+        setRestorePhase('restarting')
+        toast.success(`${result.shop_name ?? 'Shop'} restored. The app is restarting…`)
+        return
+      }
+      setRestorePhase(null)
+    } catch (e) {
+      setRestorePhase(null)
+      toast.error((e as Error).message)
+    } finally {
+      setRestoring(false)
+    }
+  }
+
+  if (showRecovery) return <DriveRecovery onBack={() => setShowRecovery(false)} />
+
   return (
     <div className="flex min-h-full items-center justify-center p-6">
       <Card className="w-full max-w-3xl p-8">
@@ -40,6 +72,23 @@ export function SetupWizard() {
           <div>
             <h1 className="text-2xl font-bold">Set up your shop</h1>
             <p className="text-muted">One-time setup, works fully offline afterwards.</p>
+          </div>
+        </div>
+
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-primary/20 bg-blue-50 p-4">
+          <div>
+            <div className="font-medium">Moving from another device?</div>
+            <p className="mt-0.5 text-sm text-muted">
+              Recover your complete shop from a backup file or from Google Drive.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" onClick={restoreFromFile} loading={restoring}>
+              <HardDriveDownload size={16} /> Restore from file
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setShowRecovery(true)}>
+              <CloudDownload size={16} /> Restore from Google Drive
+            </Button>
           </div>
         </div>
 

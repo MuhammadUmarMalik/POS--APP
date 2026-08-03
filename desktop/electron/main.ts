@@ -4,7 +4,9 @@ import path from 'node:path'
 import { openDb, closeDb } from './db'
 import { registerIpc } from './ipc'
 import { registerImageProtocol } from './services/images'
-import { startAutoSyncScheduler } from './services/sync'
+import { startSubscriptionScheduler } from './services/subscription'
+import { startGoogleDriveBackupScheduler } from './services/googleDriveBackup'
+import { startLocalBackupScheduler, backupOnClose } from './services/localAutoBackup'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -19,6 +21,21 @@ process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL
   : RENDERER_DIST
 
 let win: BrowserWindow | null
+
+// Two processes on one pos.db is how a shop loses a day of sales. It also
+// matters for restore: relaunching hands the database over to a new process,
+// and a leftover instance holding the old file would fight it for the lock.
+// The headless suites run their own throwaway data directory, so they opt out.
+const headless = process.env.POS_SMOKE === '1' || process.env.POS_PRINT_SMOKE === '1'
+if (!headless && !app.requestSingleInstanceLock()) {
+  app.exit(0)
+}
+
+app.on('second-instance', () => {
+  if (!win) return
+  if (win.isMinimized()) win.restore()
+  win.focus()
+})
 
 function createWindow() {
   win = new BrowserWindow({
@@ -58,8 +75,22 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
-  closeDb()
+// A shop that closes at 8pm would never reach a backup scheduled for 9pm, so
+// the last thing the app does is back itself up. The quit is deferred exactly
+// once — backupOnClose never throws and never runs longer than its own timeout,
+// so this cannot leave the app unable to close.
+let closingBackupStarted = false
+app.on('before-quit', (event) => {
+  if (closingBackupStarted) {
+    closeDb()
+    return
+  }
+  closingBackupStarted = true
+  event.preventDefault()
+  void backupOnClose().finally(() => {
+    closeDb()
+    app.quit()
+  })
 })
 
 app.on('activate', () => {
@@ -80,6 +111,17 @@ app.whenReady().then(async () => {
     app.exit(code)
     return
   }
+  if (process.env.POS_PRINT_SMOKE === '1') {
+    const { runPrintSmokeTest } = await import('./printSmoke')
+    let code = 1
+    try {
+      code = await runPrintSmokeTest()
+    } catch (err) {
+      console.error('PRINT SMOKE CRASH', err)
+    }
+    app.exit(code)
+    return
+  }
   try {
     openDb()
   } catch (err) {
@@ -87,8 +129,18 @@ app.whenReady().then(async () => {
     app.exit(1)
     return
   }
-  registerImageProtocol()
-  registerIpc(!!VITE_DEV_SERVER_URL)
-  startAutoSyncScheduler()
+  // Anything failing between here and createWindow() would otherwise reject the
+  // whenReady promise silently, leaving the shop staring at no window at all.
+  try {
+    registerImageProtocol()
+    registerIpc(!!VITE_DEV_SERVER_URL)
+    startSubscriptionScheduler()
+    startGoogleDriveBackupScheduler()
+    startLocalBackupScheduler()
+  } catch (err) {
+    dialog.showErrorBox('POS Desktop — startup error', String(err))
+    app.exit(1)
+    return
+  }
   createWindow()
 })
