@@ -5,8 +5,12 @@ node_modules/
 dist/
 dist-ssr/
 dist-electron/
+dist-smoke/
 release/
 *.tsbuildinfo
+
+# Generated smoke-test entry point
+desktop/.smoke-entry.ts
 
 # Logs
 logs/
@@ -19,7 +23,24 @@ pnpm-debug.log*
 # Local env / secrets
 .env
 .env.*
+!.env.example
 *.local
+
+# Google Drive backup OAuth client. Contains a live client_secret — the
+# committed template is google-drive-oauth.example.json.
+desktop/resources/google-drive-oauth.json
+
+# Code-signing material (CSC_LINK / CSC_KEY_PASSWORD point at these).
+# Never commit a certificate or its password.
+*.pfx
+*.p12
+*.pem
+*.key
+*.keystore
+*.jks
+
+# Vendor-only record of issued license keys (npm run genkey) — plaintext keys.
+desktop/scripts/issued-keys.jsonl
 
 # Local databases
 *.db
@@ -37,3 +58,6 @@ nul
 *.njsproj
 *.sln
 *.sw?
+
+# Export verification harness build output
+desktop/scripts/.export-verify.mjs
