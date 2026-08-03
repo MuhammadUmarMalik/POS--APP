@@ -6,7 +6,8 @@ import { formatMoney } from '../../lib/money'
 import { formatDateTime, rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Badge, Card, Spinner } from '../../components/ui'
-import { ReportTable, Segmented, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, Segmented, StatCard, Td, Th } from './shared'
 
 interface ReturnsReport {
   sale: { count: number; total: number }
@@ -38,8 +39,48 @@ export function ReturnsTab({ from, to }: { from: string; to: string }) {
 
   const rows = filter === 'all' ? data.rows : data.rows.filter((r) => r.kind === filter)
 
+  const kindLabel = (r: ReturnsReport['rows'][number]) =>
+    r.is_cancellation ? 'Cancellation' : r.kind === 'sale' ? 'Sale return' : 'Purchase return'
+
   return (
     <div className="space-y-4">
+      {/* Exports `rows`, so the All / Sales / Purchase segmented filter carries
+          into the file exactly as it filters the table. */}
+      <ReportExport
+        module="ReturnsReport"
+        from={from}
+        to={to}
+        title="Returns Report"
+        meta={[['Filter', filter === 'all' ? 'All returns' : filter === 'sale' ? 'Sales returns' : 'Purchase returns']]}
+        stats={[
+          { label: 'Sales returns', value: String(data.sale.count) },
+          { label: 'Refunded to customers', value: formatMoney(data.sale.total, currency) },
+          { label: 'Purchase returns', value: String(data.purchase.count) },
+          { label: 'Recovered from suppliers', value: formatMoney(data.purchase.total, currency) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'Date', value: (r: ReturnsReport['rows'][number]) => formatDateTime(r.created_at) },
+              { header: 'Type', value: kindLabel },
+              { header: 'Invoice', value: (r) => r.invoice_number },
+              { header: 'Party', value: (r) => r.party_name ?? '' },
+              { header: 'Amount', value: (r) => r.refund_amount, money: true },
+              { header: 'Method', value: (r) => r.refund_method },
+              { header: 'Reason', value: (r) => r.reason ?? '' },
+              { header: 'By', value: (r) => r.created_by_name ?? '' },
+            ],
+            rows,
+            footer: [
+              `Total (${rows.length})`,
+              '', '', '',
+              rows.reduce((a, r) => a + r.refund_amount, 0),
+              '', '', '',
+            ],
+          }),
+        ]}
+        note="“Method” shows where the refund went: cash was handed back; due was knocked off the party's balance."
+      />
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Sales returns" value={String(data.sale.count)} />
         <StatCard label="Refunded to customers" value={formatMoney(data.sale.total, currency)} tone="red" />

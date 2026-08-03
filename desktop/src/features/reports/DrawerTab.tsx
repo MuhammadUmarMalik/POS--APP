@@ -5,7 +5,8 @@ import { formatMoney } from '../../lib/money'
 import { rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Card, Spinner } from '../../components/ui'
-import { ReportTable, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, StatCard, Td, Th } from './shared'
 
 interface DrawerReport {
   rows: {
@@ -38,6 +39,44 @@ export function DrawerTab({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="CashDrawerReport"
+        from={from}
+        to={to}
+        title="Cash Drawer Report"
+        stats={[
+          { label: 'Cash from sales', value: formatMoney(data.totals.cash_sales, currency) },
+          { label: 'Cash dues collected', value: formatMoney(data.totals.due_collected_cash, currency) },
+          { label: 'Cash refunds handed out', value: formatMoney(data.totals.refunds_paid_cash, currency) },
+          { label: 'Expected cash (all users)', value: formatMoney(data.totals.expected_cash, currency) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'User', value: (r: DrawerReport['rows'][number]) => r.user },
+              { header: 'Cash sales', value: (r) => r.cash_sales, money: true },
+              { header: 'Cash sale count', value: (r) => r.cash_sale_count, align: 'right' },
+              { header: 'Dues collected (cash)', value: (r) => r.due_collected_cash, money: true },
+              { header: 'Refunds paid (cash)', value: (r) => r.refunds_paid_cash, money: true },
+              { header: 'Expected cash in drawer', value: (r) => r.expected_cash, money: true },
+              { header: 'Card sales', value: (r) => r.card_sales, money: true },
+              { header: 'Credit sales', value: (r) => r.credit_sales, money: true },
+            ],
+            rows: data.rows,
+            footer: [
+              'Total',
+              data.totals.cash_sales,
+              data.rows.reduce((a, r) => a + r.cash_sale_count, 0),
+              data.totals.due_collected_cash,
+              data.totals.refunds_paid_cash,
+              data.totals.expected_cash,
+              data.totals.card_sales,
+              data.totals.credit_sales,
+            ],
+          }),
+        ]}
+        note="Expected cash = cash sales + customer dues collected in cash − cash refunds handed out, per user. Count the drawer against this figure at shift end."
+      />
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Cash from sales" value={formatMoney(data.totals.cash_sales, currency)} tone="green" />
         <StatCard label="Cash dues collected" value={formatMoney(data.totals.due_collected_cash, currency)} tone="green" />

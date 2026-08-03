@@ -8,7 +8,8 @@ import { useCurrency } from '../../stores/auth'
 import type { ProductWithStock } from '../../shared/types'
 import { Badge, Card, Spinner } from '../../components/ui'
 import { stockTone } from '../products/ProductsPage'
-import { ReportTable, Segmented, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, Segmented, StatCard, Td, Th } from './shared'
 
 type Mode = 'onhand' | 'movements'
 
@@ -39,13 +40,51 @@ function OnHandView() {
   })
   if (isLoading || !products) return <Spinner />
 
-  const totalCost = products.reduce((a, p) => a + Math.max(0, p.stock) * p.cost_price, 0)
+  const totalCost = products.reduce((a, p) => a + Math.max(0, p.stock) * (p.cost_price ?? 0), 0)
   const totalSale = products.reduce((a, p) => a + Math.max(0, p.stock) * p.sale_price, 0)
   const low = products.filter((p) => p.stock <= p.min_stock_alert)
   const rows = lowOnly ? low : products
 
   return (
     <div className="space-y-4">
+      {/* Exports `rows`, not `products` — the low-stock checkbox must carry
+          through to the file exactly as it filters the table on screen. */}
+      <ReportExport
+        module="StockReport-OnHand"
+        title="Stock on Hand"
+        meta={[
+          ['Filter', lowOnly ? 'Low / out of stock only' : 'All products'],
+          ['Snapshot', new Date().toLocaleString()],
+        ]}
+        stats={[
+          { label: 'Products', value: String(products.length) },
+          { label: 'Stock valuation (cost)', value: formatMoney(totalCost, currency) },
+          { label: 'Stock valuation (sale price)', value: formatMoney(totalSale, currency) },
+          { label: 'Low / out of stock', value: String(low.length) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'Product', value: (p: ProductWithStock) => p.name },
+              { header: 'Category', value: (p) => p.category_name ?? '' },
+              { header: 'Stock', value: (p) => p.stock, align: 'right' },
+              { header: 'Alert level', value: (p) => p.min_stock_alert, align: 'right' },
+              { header: 'Unit cost', value: (p) => (p.cost_price ?? 0), money: true },
+              { header: 'Value (cost)', value: (p) => Math.max(0, p.stock) * (p.cost_price ?? 0), money: true },
+            ],
+            rows,
+            footer: [
+              'Total',
+              '',
+              rows.reduce((a, p) => a + p.stock, 0),
+              '',
+              '',
+              rows.reduce((a, p) => a + Math.max(0, p.stock) * (p.cost_price ?? 0), 0),
+            ],
+          }),
+        ]}
+        note="Snapshot of stock right now — the report date range does not apply to this view."
+      />
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Products" value={String(products.length)} />
         <StatCard label="Stock valuation (cost)" value={formatMoney(totalCost, currency)} />
@@ -81,8 +120,8 @@ function OnHandView() {
               <Td className="text-muted">{p.category_name ?? '—'}</Td>
               <Td right><Badge tone={stockTone(p)}>{p.stock}</Badge></Td>
               <Td right className="text-muted">{p.min_stock_alert}</Td>
-              <Td right>{formatMoney(p.cost_price, currency)}</Td>
-              <Td right>{formatMoney(Math.max(0, p.stock) * p.cost_price, currency)}</Td>
+              <Td right>{formatMoney((p.cost_price ?? 0), currency)}</Td>
+              <Td right>{formatMoney(Math.max(0, p.stock) * (p.cost_price ?? 0), currency)}</Td>
             </tr>
           ))
         )}
@@ -145,6 +184,47 @@ function MovementsView({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="StockReport-Movements"
+        from={from}
+        to={to}
+        title="Stock Movement Log"
+        meta={[['Movement type', type ? (TYPE_LABELS[type] ?? type) : 'All']]}
+        stats={[
+          { label: 'Units in', value: `+${unitsIn}` },
+          { label: 'Units out', value: `-${unitsOut}` },
+          { label: 'Net change', value: String(unitsIn - unitsOut) },
+        ]}
+        sections={[
+          section({
+            title: 'By movement type',
+            columns: [
+              {
+                header: 'Type',
+                value: (t: StockMovementsReport['byType'][number]) => TYPE_LABELS[t.change_type] ?? t.change_type,
+              },
+              { header: 'Entries', value: (t) => t.count, align: 'right' },
+              { header: 'Units in', value: (t) => t.units_in, align: 'right' },
+              { header: 'Units out', value: (t) => t.units_out, align: 'right' },
+            ],
+            rows: data.byType,
+            footer: ['Total', data.byType.reduce((a, t) => a + t.count, 0), unitsIn, unitsOut],
+          }),
+          section({
+            title: 'Movements',
+            columns: [
+              { header: 'Time', value: (r: StockMovementsReport['rows'][number]) => formatDateTime(r.created_at) },
+              { header: 'Product', value: (r) => r.product ?? '' },
+              { header: 'Type', value: (r) => TYPE_LABELS[r.change_type] ?? r.change_type },
+              { header: 'Change', value: (r) => r.quantity_change, align: 'right' },
+              { header: 'Reason', value: (r) => r.reason ?? '' },
+              { header: 'By', value: (r) => r.user ?? '' },
+            ],
+            rows: data.rows,
+          }),
+        ]}
+        note="Every stock change in the shop, newest first (latest 500). Stock is never edited directly — this log is the source of truth."
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Units in" value={`+${unitsIn}`} tone="green" />
         <StatCard label="Units out" value={`-${unitsOut}`} tone="red" />

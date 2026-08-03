@@ -1,10 +1,23 @@
 import { getDb } from '../db'
 import { expenseTotal } from './expenses'
+import { canViewCost } from './permissions'
 import type { Session } from '../../src/shared/types'
 
 export interface DateRange {
   from: string // ISO
   to: string // ISO
+}
+
+/**
+ * Midnight this morning, in the machine's own timezone, as the ISO string the
+ * created_at columns are stored in. "Today" for a shopkeeper is their day, not
+ * UTC's — a shop open past midnight UTC would otherwise see its takings reset
+ * mid-evening.
+ */
+function startOfLocalDay(): string {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString()
 }
 
 export function salesReport(session: Session, range: DateRange) {
@@ -109,7 +122,26 @@ export function duesReport(session: Session) {
   return { customers, suppliers }
 }
 
-export function dashboard(session: Session) {
+export interface DashboardOverview {
+  stockHealth: { total: number; healthy: number; low: number; out: number }
+  categories: { name: string; count: number }[]
+  lowStock: { id: string; name: string; min_stock_alert: number; stock: number }[]
+  /** Money. Present only for a session allowed to see cost — see below. */
+  today?: { count: number; total: number; refunds: number; grossProfit: number }
+  stockValue?: number
+  recentSales?: {
+    id: string
+    invoice_number: string
+    created_at: string
+    total: number
+    payment_method: string
+    status: string
+    customer_name: string | null
+    item_count: number
+  }[]
+}
+
+export function dashboard(session: Session): DashboardOverview {
   const db = getDb()
   const stockHealth = db
     .prepare(
@@ -152,7 +184,74 @@ export function dashboard(session: Session) {
     )
     .all(session.shopId) as { id: string; name: string; min_stock_alert: number; stock: number }[]
 
-  return { stockHealth, categories, lowStock }
+  // Everything below is money the shop paid or took. It is computed only for a
+  // session allowed to see cost, so a cashier reading this response in devtools
+  // gets the operational half and nothing else — the same rule the product
+  // lists follow. The route itself is admin-only; this is the second lock.
+  if (!canViewCost(session)) return { stockHealth, categories, lowStock }
+
+  const dayStart = startOfLocalDay()
+  const today = db
+    .prepare(
+      `SELECT COUNT(*) AS count,
+              COALESCE(SUM(s.total),0) AS total,
+              COALESCE(SUM(c.cogs),0) AS cogs
+       FROM sales s
+       LEFT JOIN (SELECT sale_id, SUM(cost_price * (quantity - returned_quantity)) AS cogs
+                  FROM sale_items GROUP BY sale_id) c ON c.sale_id = s.id
+       WHERE s.shop_id = ? AND s.created_at >= ?`
+    )
+    .get(session.shopId, dayStart) as { count: number; total: number; cogs: number }
+  // Refunds given today are netted off both the takings and the profit, so the
+  // tile agrees with the Profit & Loss report over the same day.
+  const todayRefunds = db
+    .prepare(
+      `SELECT COALESCE(SUM(refund_amount),0) AS v FROM returns
+       WHERE shop_id = ? AND kind = 'sale' AND created_at >= ?`
+    )
+    .get(session.shopId, dayStart) as { v: number }
+
+  // Stock on hand valued at what it cost, straight off the same ledger every
+  // other stock figure comes from. Latest purchase cost — see the costing note
+  // in the README.
+  const stockValue = db
+    .prepare(
+      `SELECT COALESCE(SUM(COALESCE(s.stock,0) * COALESCE(p.cost_price,0)),0) AS v
+       FROM products p
+       LEFT JOIN (SELECT product_id, SUM(quantity_change) AS stock FROM inventory_logs GROUP BY product_id) s
+         ON s.product_id = p.id
+       WHERE p.shop_id = ? AND p.is_deleted = 0 AND COALESCE(s.stock,0) > 0`
+    )
+    .get(session.shopId) as { v: number }
+
+  const recentSales = db
+    .prepare(
+      `SELECT s.id, s.invoice_number, s.created_at, s.total, s.payment_method, s.status,
+              c.name AS customer_name,
+              (SELECT COALESCE(SUM(quantity),0) FROM sale_items WHERE sale_id = s.id) AS item_count
+       FROM sales s
+       LEFT JOIN customers c ON c.id = s.customer_id
+       WHERE s.shop_id = ?
+       ORDER BY s.created_at DESC LIMIT 8`
+    )
+    .all(session.shopId) as {
+    id: string; invoice_number: string; created_at: string; total: number
+    payment_method: string; status: string; customer_name: string | null; item_count: number
+  }[]
+
+  return {
+    stockHealth,
+    categories,
+    lowStock,
+    today: {
+      count: today.count,
+      total: today.total - todayRefunds.v,
+      refunds: todayRefunds.v,
+      grossProfit: today.total - todayRefunds.v - today.cogs,
+    },
+    stockValue: stockValue.v,
+    recentSales,
+  }
 }
 
 /** Sales grouped per local day or month: Daily Sales / Monthly Sales reports.

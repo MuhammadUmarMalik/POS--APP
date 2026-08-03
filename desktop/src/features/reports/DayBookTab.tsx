@@ -5,7 +5,8 @@ import { formatMoney } from '../../lib/money'
 import { formatDateTime, rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Badge, Card, Spinner } from '../../components/ui'
-import { ReportTable, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, StatCard, Td, Th } from './shared'
 
 interface DayBookReport {
   rows: {
@@ -50,6 +51,39 @@ export function DayBookTab({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="DayBook"
+        from={from}
+        to={to}
+        title="Day Book"
+        stats={[
+          { label: `Sales (${s.sales.count})`, value: formatMoney(s.sales.total, currency) },
+          { label: `Purchases (${s.purchases.count})`, value: formatMoney(s.purchases.total, currency) },
+          { label: `Returns (${s.returns.count})`, value: formatMoney(s.returns.total, currency) },
+          { label: `Expenses (${s.expenses.count})`, value: formatMoney(s.expenses.total, currency) },
+          { label: 'Money received', value: formatMoney(s.cashIn, currency) },
+          { label: 'Money paid out', value: formatMoney(s.cashOut, currency) },
+          { label: 'Net money movement', value: formatMoney(s.netCash, currency) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'Time', value: (r: DayBookReport['rows'][number]) => formatDateTime(r.at) },
+              { header: 'Entry', value: (r) => r.type },
+              { header: 'Ref / note', value: (r) => r.ref },
+              { header: 'Party', value: (r) => r.party ?? '' },
+              { header: 'Amount', value: (r) => r.amount, money: true },
+              // Signed, so a spreadsheet can sum the column straight to netCash.
+              { header: 'Money moved', value: (r) => r.cash_effect, money: true },
+              { header: 'Method', value: (r) => r.method ?? '' },
+              { header: 'By', value: (r) => r.user ?? '' },
+            ],
+            rows: data.rows,
+            footer: ['Total', '', '', '', '', s.netCash, '', ''],
+          }),
+        ]}
+        note="“Amount” is the size of the transaction; “Money moved” is the cash/card that actually changed hands with it. Credit sales and purchases move 0 — the money appears later as a due payment."
+      />
       <div className="grid grid-cols-4 gap-4">
         <StatCard label={`Sales (${s.sales.count})`} value={formatMoney(s.sales.total, currency)} tone="green" />
         <StatCard label={`Purchases (${s.purchases.count})`} value={formatMoney(s.purchases.total, currency)} />

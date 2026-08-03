@@ -6,7 +6,8 @@ import { formatMoney } from '../../lib/money'
 import { rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Card, Spinner } from '../../components/ui'
-import { ReportTable, Segmented, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, Segmented, StatCard, Td, Th } from './shared'
 
 interface SalesReport {
   totals: { count: number; total: number; discount: number; tax: number }
@@ -51,6 +52,42 @@ function SummaryView({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="SalesReport"
+        from={from}
+        to={to}
+        title="Sales Report — Summary"
+        stats={[
+          { label: 'Transactions', value: String(data.totals.count) },
+          { label: 'Gross sales', value: formatMoney(data.totals.total, currency) },
+          { label: 'Net sales (after refunds)', value: formatMoney(data.totals.total - data.refunds, currency) },
+          { label: 'Discounts given', value: formatMoney(data.totals.discount, currency) },
+          { label: 'Tax collected', value: formatMoney(data.totals.tax, currency) },
+          { label: 'Refunds (cash + due)', value: formatMoney(data.refunds, currency) },
+        ]}
+        sections={[
+          section({
+            title: 'By payment method',
+            columns: [
+              { header: 'Payment method', value: (m: SalesReport['byMethod'][number]) => m.method },
+              { header: 'Sales', value: (m) => m.count, align: 'right' },
+              { header: 'Total', value: (m) => m.total, money: true },
+            ],
+            rows: data.byMethod,
+            footer: ['Total', data.byMethod.reduce((a, m) => a + m.count, 0), data.totals.total],
+          }),
+          section({
+            title: 'By cashier',
+            columns: [
+              { header: 'Cashier', value: (c: SalesReport['byCashier'][number]) => c.cashier },
+              { header: 'Sales', value: (c) => c.count, align: 'right' },
+              { header: 'Total', value: (c) => c.total, money: true },
+            ],
+            rows: data.byCashier,
+            footer: ['Total', data.byCashier.reduce((a, c) => a + c.count, 0), data.totals.total],
+          }),
+        ]}
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Transactions" value={String(data.totals.count)} />
         <StatCard label="Gross sales" value={formatMoney(data.totals.total, currency)} tone="green" />
@@ -115,10 +152,57 @@ function SeriesView({ from, to, group }: { from: string; to: string; group: 'day
     queryFn: () => api<SalesSeries>('reports:salesSeries', { ...rangeFromInputs(from, to), group }),
   })
   if (isLoading || !data) return <Spinner />
-  if (data.rows.length === 0) return <Card><p className="text-muted">No sales in range.</p></Card>
+
+  const label = group === 'day' ? 'Day' : 'Month'
+  const exportBar = (
+    <ReportExport
+      module={group === 'day' ? 'SalesReport-Daily' : 'SalesReport-Monthly'}
+      from={from}
+      to={to}
+      title={`Sales Report — ${label === 'Day' ? 'Daily' : 'Monthly'}`}
+      stats={[
+        { label: 'Transactions', value: String(data.totals.count) },
+        { label: 'Total sales', value: formatMoney(data.totals.total, currency) },
+        { label: 'Discounts', value: formatMoney(data.totals.discount, currency) },
+        { label: 'Gross profit', value: formatMoney(data.totals.profit, currency) },
+      ]}
+      sections={[
+        section({
+          columns: [
+            { header: label, value: (r: SalesSeries['rows'][number]) => formatBucket(r.bucket, group) },
+            { header: 'Sales', value: (r) => r.count, align: 'right' },
+            { header: 'Discount', value: (r) => r.discount, money: true },
+            { header: 'Tax', value: (r) => r.tax, money: true },
+            { header: 'Total', value: (r) => r.total, money: true },
+            { header: 'Gross profit', value: (r) => r.profit, money: true },
+          ],
+          rows: data.rows,
+          footer: [
+            'Total',
+            data.totals.count,
+            data.totals.discount,
+            data.totals.tax,
+            data.totals.total,
+            data.totals.profit,
+          ],
+        }),
+      ]}
+      note={`Gross profit = sales total − cost of the goods sold, both before any returns.`}
+    />
+  )
+
+  if (data.rows.length === 0) {
+    return (
+      <div className="space-y-4">
+        {exportBar}
+        <Card><p className="text-muted">No sales in range.</p></Card>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
+      {exportBar}
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Transactions" value={String(data.totals.count)} />
         <StatCard label="Total sales" value={formatMoney(data.totals.total, currency)} tone="green" />

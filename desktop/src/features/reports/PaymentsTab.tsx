@@ -6,7 +6,8 @@ import { formatMoney } from '../../lib/money'
 import { formatDateTime, rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Card, Spinner } from '../../components/ui'
-import { ReportTable, Segmented, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, Segmented, StatCard, Td, Th } from './shared'
 
 interface PaymentMethodReport {
   sales: { method: string; count: number; total: number }[]
@@ -53,8 +54,49 @@ function SummaryView({ from, to }: { from: string; to: string }) {
   const moneyIn = data.flows.filter((f) => f.direction === 'in')
   const moneyOut = data.flows.filter((f) => f.direction === 'out')
 
+  const flowSection = (title: string, rows: PaymentMethodReport['flows']) =>
+    section({
+      title,
+      columns: [
+        {
+          header: 'Entry',
+          value: (r: PaymentMethodReport['flows'][number]) => FLOW_LABELS[r.reference_type] ?? r.reference_type,
+        },
+        { header: 'Method', value: (r) => r.method },
+        { header: 'Count', value: (r) => r.count, align: 'right' },
+        { header: 'Amount', value: (r) => r.total, money: true },
+      ],
+      rows,
+      footer: ['Total', '', rows.reduce((a, r) => a + r.count, 0), rows.reduce((a, r) => a + r.total, 0)],
+    })
+
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="PaymentsReport"
+        from={from}
+        to={to}
+        title="Payments Report — Summary"
+        sections={[
+          section({
+            title: 'Sales by tender',
+            columns: [
+              { header: 'Tender', value: (m: PaymentMethodReport['sales'][number]) => m.method },
+              { header: 'Sales', value: (m) => m.count, align: 'right' },
+              { header: 'Total', value: (m) => m.total, money: true },
+            ],
+            rows: data.sales,
+            footer: [
+              'Total',
+              data.sales.reduce((a, m) => a + m.count, 0),
+              data.sales.reduce((a, m) => a + m.total, 0),
+            ],
+          }),
+          flowSection('Money received', moneyIn),
+          flowSection('Money paid out', moneyOut),
+        ]}
+        note="Credit sales add to customer dues — the cash arrives later as a due payment."
+      />
       <Card>
         <h3 className="mb-3 font-semibold">Sales by tender</h3>
         {data.sales.length === 0 ? (
@@ -161,6 +203,34 @@ function CashBookView({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="CashBook"
+        from={from}
+        to={to}
+        title="Cash Book"
+        stats={[
+          { label: 'Total received', value: formatMoney(data.totals.in, currency) },
+          { label: 'Total paid out', value: formatMoney(data.totals.out, currency) },
+          { label: 'Net for range', value: formatMoney(data.totals.net, currency) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'Time', value: (r: CashBookReport['rows'][number]) => formatDateTime(r.at) },
+              { header: 'Entry', value: (r) => (r.note ? `${r.type} — ${r.note}` : r.type) },
+              { header: 'Party', value: (r) => r.party ?? '' },
+              { header: 'Method', value: (r) => r.method ?? '' },
+              { header: 'In', value: (r) => (r.in_amount ? r.in_amount : ''), money: true },
+              { header: 'Out', value: (r) => (r.out_amount ? r.out_amount : ''), money: true },
+              { header: 'Running net', value: (r) => r.balance, money: true },
+              { header: 'By', value: (r) => r.user ?? '' },
+            ],
+            rows: data.rows,
+            footer: ['Total', '', '', '', data.totals.in, data.totals.out, data.totals.net, ''],
+          }),
+        ]}
+        note="The running net starts at zero at the beginning of the range — it shows how money moved, not the drawer's absolute balance."
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Total received" value={formatMoney(data.totals.in, currency)} tone="green" />
         <StatCard label="Total paid out" value={formatMoney(data.totals.out, currency)} tone="red" />

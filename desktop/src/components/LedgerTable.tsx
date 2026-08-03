@@ -5,9 +5,24 @@ import { formatMoney } from '../lib/money'
 import { formatDateTime } from '../lib/utils'
 import { useCurrency } from '../stores/auth'
 import type { LedgerEntry } from '../shared/types'
+import { section } from '../lib/export'
+import { ExportBar } from './ExportBar'
 import { Spinner } from './ui'
 
-export function LedgerTable({ channel, partyId }: { channel: 'customers:ledger' | 'suppliers:ledger'; partyId: string }) {
+export function LedgerTable({
+  channel,
+  partyId,
+  exportModule,
+  exportScope,
+  exportTitle,
+}: {
+  channel: 'customers:ledger' | 'suppliers:ledger'
+  partyId: string
+  /** Pass these to show Print / PDF / CSV above the table. */
+  exportModule?: string
+  exportScope?: string
+  exportTitle?: string
+}) {
   const currency = useCurrency()
   const { data, isLoading } = useQuery({
     queryKey: ['ledger', channel, partyId],
@@ -24,6 +39,37 @@ export function LedgerTable({ channel, partyId }: { channel: 'customers:ledger' 
   const closing = data[data.length - 1].balance
 
   return (
+    <>
+    {exportModule && (
+      <div className="no-print mb-2 flex justify-end">
+        <ExportBar
+          module={exportModule}
+          scope={exportScope}
+          csv
+          buildDoc={() => ({
+            module: exportModule,
+            scope: exportScope,
+            title: exportTitle ?? 'Ledger',
+            subtitle: exportScope,
+            sections: [
+              section({
+                columns: [
+                  { header: 'Date', value: (e: LedgerEntry) => formatDateTime(e.date) },
+                  { header: 'Entry', value: (e) => e.type },
+                  { header: 'Ref', value: (e) => e.description },
+                  { header: 'Debit', value: (e) => (e.debit ? e.debit : ''), money: true },
+                  { header: 'Credit', value: (e) => (e.credit ? e.credit : ''), money: true },
+                  { header: 'Balance', value: (e) => e.balance, money: true },
+                ],
+                rows: data,
+                footer: ['Total', '', '', totalDebit, totalCredit, closing],
+              }),
+            ],
+            note: 'Debit increases the balance owed; credit reduces it. Balance is the running total after each entry.',
+          })}
+        />
+      </div>
+    )}
     <div className="max-h-72 overflow-y-auto rounded-md border border-line">
       <table className="w-full text-left text-sm">
         <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-muted">
@@ -62,5 +108,6 @@ export function LedgerTable({ channel, partyId }: { channel: 'customers:ledger' 
         </tbody>
       </table>
     </div>
+    </>
   )
 }

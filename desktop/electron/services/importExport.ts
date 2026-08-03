@@ -40,7 +40,7 @@ export async function exportProducts(session: Session): Promise<{ saved: boolean
       Category: p.category_name ?? '',
       Brand: p.brand_name ?? '',
       Unit: p.unit,
-      'Cost Price': p.cost_price / 100,
+      'Cost Price': (p.cost_price ?? 0) / 100,
       'Sale Price': p.sale_price / 100,
       'Tax %': p.tax_percent,
       'Min Stock Alert': p.min_stock_alert,

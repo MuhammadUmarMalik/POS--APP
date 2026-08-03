@@ -1,13 +1,14 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Printer } from 'lucide-react'
 import { api } from '../../lib/ipc'
 import { formatMoney } from '../../lib/money'
 import { rangeFromInputs, todayInput } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
-import { Button, Card, Input, PageTitle, Spinner } from '../../components/ui'
+import { Card, Input, PageTitle, Spinner } from '../../components/ui'
 import { cn } from '../../lib/utils'
-import { ReportTable, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, StatCard, Td, Th } from './shared'
 import { SalesTab } from './SalesTab'
 import { DayBookTab } from './DayBookTab'
 import { ProductsTab } from './ProductsTab'
@@ -19,6 +20,8 @@ import { CashFlowTab } from './CashFlowTab'
 import { DrawerTab } from './DrawerTab'
 import { DuesTab } from './DuesTab'
 import { LedgersTab } from './LedgersTab'
+import { ExpiryTab } from './ExpiryTab'
+import { useBatchTracking } from '../batches/useBatchSettings'
 
 type Tab =
   | 'sales'
@@ -36,6 +39,7 @@ type Tab =
   | 'customers'
   | 'suppliers'
   | 'ledgers'
+  | 'expiry'
 
 const TABS: [Tab, string][] = [
   ['sales', 'Sales'],
@@ -97,25 +101,22 @@ const PRESETS: [string, () => { from: string; to: string }][] = [
 ]
 
 export function ReportsPage() {
-  const [tab, setTab] = useState<Tab>('sales')
+  const [params] = useSearchParams()
+  const batchTracking = useBatchTracking()
+  // The inventory expiry banner links straight here with ?tab=expiry.
+  const [tab, setTab] = useState<Tab>((params.get('tab') as Tab) || 'sales')
   const [from, setFrom] = useState(todayInput())
   const [to, setTo] = useState(todayInput())
 
   return (
     <div>
-      <PageTitle
-        actions={
-          <Button variant="secondary" onClick={() => window.print()}>
-            <Printer size={16} /> Print
-          </Button>
-        }
-      >
-        Reports
-      </PageTitle>
+      {/* Print / PDF / CSV lives inside each tab — only the tab knows what its rows and totals are. */}
+      <PageTitle>Reports</PageTitle>
 
       <div className="no-print mb-4 flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-wrap gap-1 rounded-lg border border-line bg-surface p-1">
-          {TABS.map(([t, label]) => (
+          {/* Expiry only exists for shops that date their stock. */}
+          {[...TABS, ...(batchTracking ? ([['expiry', 'Expiry']] as [Tab, string][]) : [])].map(([t, label]) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -173,6 +174,7 @@ export function ReportsPage() {
         {tab === 'customers' && <CustomersTab from={from} to={to} />}
         {tab === 'suppliers' && <SuppliersTab from={from} to={to} />}
         {tab === 'ledgers' && <LedgersTab />}
+        {tab === 'expiry' && <ExpiryTab />}
       </div>
     </div>
   )
@@ -225,6 +227,34 @@ function PlTab({ from, to }: { from: string; to: string }) {
   ]
 
   return (
+    <div className="space-y-4">
+    <ReportExport
+      module="ProfitAndLoss"
+      from={from}
+      to={to}
+      title="Profit & Loss"
+      stats={[
+        { label: `Gross profit (${pct(data.grossProfit, data.netRevenue)} margin)`, value: formatMoney(data.grossProfit, currency) },
+        { label: 'Shop expenses', value: formatMoney(data.expenses, currency) },
+        { label: `Net profit (${pct(data.netProfit, data.netRevenue)} margin)`, value: formatMoney(data.netProfit, currency) },
+      ]}
+      sections={[
+        section({
+          columns: [
+            { header: 'Line', value: (r: [string, number]) => r[0] },
+            // Signed, so a spreadsheet reads deductions as negative rather than as text.
+            { header: 'Amount', value: (r: [string, number]) => r[1], money: true },
+          ],
+          rows: [
+            ...rows,
+            ['Gross profit', data.grossProfit] as [string, number],
+            ['Shop expenses', -data.expenses] as [string, number],
+          ],
+          footer: ['Net profit', data.netProfit],
+        }),
+      ]}
+      note={`Discounts of ${formatMoney(data.discounts, currency)} are already reflected in revenue. Refunds include both cash refunds and returns credited against customer dues. COGS uses the cost recorded on each sale line at the time of sale, less the cost of returned items.`}
+    />
     <Card className="mx-auto max-w-xl">
       <h3 className="mb-4 text-lg font-semibold">Profit &amp; Loss</h3>
       <table className="w-full">
@@ -267,6 +297,7 @@ function PlTab({ from, to }: { from: string; to: string }) {
         time of sale, less the cost of returned items.
       </p>
     </Card>
+    </div>
   )
 }
 
@@ -280,6 +311,41 @@ function ExpensesTab({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="ExpensesReport"
+        from={from}
+        to={to}
+        title="Expenses Report"
+        stats={[
+          { label: 'Total expenses', value: formatMoney(data.total, currency) },
+          { label: 'Categories used', value: String(data.byCategory.length) },
+          { label: 'Months in range', value: String(data.byMonth.length) },
+        ]}
+        sections={[
+          section({
+            title: 'By category',
+            columns: [
+              { header: 'Category', value: (c: ExpenseReport['byCategory'][number]) => c.category },
+              { header: 'Entries', value: (c) => c.count, align: 'right' },
+              { header: 'Share', value: (c) => pct(c.total, data.total), align: 'right' },
+              { header: 'Total', value: (c) => c.total, money: true },
+            ],
+            rows: data.byCategory,
+            footer: ['Total', data.byCategory.reduce((a, c) => a + c.count, 0), '', data.total],
+            emptyText: 'No expenses in range.',
+          }),
+          section({
+            title: 'By month',
+            columns: [
+              { header: 'Month', value: (m: ExpenseReport['byMonth'][number]) => m.month },
+              { header: 'Total', value: (m) => m.total, money: true },
+            ],
+            rows: data.byMonth,
+            footer: ['Total', data.total],
+            emptyText: 'No expenses in range.',
+          }),
+        ]}
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Total expenses" value={formatMoney(data.total, currency)} tone="red" />
         <StatCard label="Categories used" value={String(data.byCategory.length)} />
@@ -337,6 +403,37 @@ function CustomersTab({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="CustomersReport"
+        from={from}
+        to={to}
+        title="Customers Report"
+        stats={[
+          { label: 'Customers', value: String(data.totals.customers) },
+          { label: 'Sales in range', value: formatMoney(data.totals.sale_total, currency) },
+          { label: 'Outstanding dues', value: formatMoney(data.totals.due_total, currency) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'Customer', value: (c: CustomerReport['rows'][number]) => c.name },
+              { header: 'Phone', value: (c) => c.phone ?? '' },
+              { header: 'Sales', value: (c) => c.sale_count, align: 'right' },
+              { header: 'Total bought', value: (c) => c.sale_total, money: true },
+              { header: 'Due', value: (c) => c.due_balance, money: true },
+            ],
+            rows: data.rows,
+            footer: [
+              'Total',
+              '',
+              data.rows.reduce((a, c) => a + c.sale_count, 0),
+              data.totals.sale_total,
+              data.totals.due_total,
+            ],
+          }),
+        ]}
+        note="“Sales” and “Total bought” count the selected range; “Due” is the balance owed right now, regardless of range."
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Customers" value={String(data.totals.customers)} />
         <StatCard label="Sales in range" value={formatMoney(data.totals.sale_total, currency)} tone="green" />
@@ -393,6 +490,37 @@ function SuppliersTab({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="SuppliersReport"
+        from={from}
+        to={to}
+        title="Suppliers Report"
+        stats={[
+          { label: 'Suppliers', value: String(data.totals.suppliers) },
+          { label: 'Purchases in range', value: formatMoney(data.totals.purchase_total, currency) },
+          { label: 'We owe', value: formatMoney(data.totals.due_total, currency) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'Supplier', value: (s: SupplierReport['rows'][number]) => s.name },
+              { header: 'Phone', value: (s) => s.phone ?? '' },
+              { header: 'Purchases', value: (s) => s.purchase_count, align: 'right' },
+              { header: 'Total bought', value: (s) => s.purchase_total, money: true },
+              { header: 'We owe', value: (s) => s.due_balance, money: true },
+            ],
+            rows: data.rows,
+            footer: [
+              'Total',
+              '',
+              data.rows.reduce((a, s) => a + s.purchase_count, 0),
+              data.totals.purchase_total,
+              data.totals.due_total,
+            ],
+          }),
+        ]}
+        note="“Purchases” and “Total bought” count the selected range; “We owe” is the balance outstanding right now."
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Suppliers" value={String(data.totals.suppliers)} />
         <StatCard label="Purchases in range" value={formatMoney(data.totals.purchase_total, currency)} />

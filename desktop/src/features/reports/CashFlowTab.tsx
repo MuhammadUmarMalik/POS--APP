@@ -5,7 +5,8 @@ import { formatMoney } from '../../lib/money'
 import { rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Card, Spinner } from '../../components/ui'
-import { ReportTable, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, StatCard, Td, Th } from './shared'
 import { cn } from '../../lib/utils'
 
 interface CashFlowReport {
@@ -38,8 +39,51 @@ export function CashFlowTab({ from, to }: { from: string; to: string }) {
     ['Shop expenses', data.outflows.expenses],
   ]
 
+  const flowSection = (title: string, rows: [string, number][], total: number) =>
+    section({
+      title,
+      columns: [
+        { header: title, value: (r: [string, number]) => r[0] },
+        { header: 'Amount', value: (r: [string, number]) => r[1], money: true },
+      ],
+      rows,
+      footer: ['Total', total],
+    })
+
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="CashFlowReport"
+        from={from}
+        to={to}
+        title="Cash Flow Summary"
+        stats={[
+          { label: 'Money in', value: formatMoney(data.inflows.total, currency) },
+          { label: 'Money out', value: formatMoney(data.outflows.total, currency) },
+          { label: 'Net cash flow', value: formatMoney(data.net, currency) },
+        ]}
+        sections={[
+          flowSection('Money in', inRows, data.inflows.total),
+          flowSection('Money out', outRows, data.outflows.total),
+          section({
+            title: 'By method',
+            columns: [
+              { header: 'Method', value: (m: 'cash' | 'card') => m },
+              { header: 'In', value: (m) => data.byMethod[m].in, money: true },
+              { header: 'Out', value: (m) => data.byMethod[m].out, money: true },
+              { header: 'Net', value: (m) => data.byMethod[m].net, money: true },
+            ],
+            rows: ['cash', 'card'] as ('cash' | 'card')[],
+            footer: [
+              'Total',
+              data.byMethod.cash.in + data.byMethod.card.in,
+              data.byMethod.cash.out + data.byMethod.card.out,
+              data.byMethod.cash.net + data.byMethod.card.net,
+            ],
+          }),
+        ]}
+        note="Credit sales and credit purchases don't appear here until money actually changes hands. Shop expenses have no payment method recorded, so they're excluded from the cash/card split."
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Money in" value={formatMoney(data.inflows.total, currency)} tone="green" />
         <StatCard label="Money out" value={formatMoney(data.outflows.total, currency)} tone="red" />

@@ -8,7 +8,8 @@ import { useCurrency } from '../../stores/auth'
 import type { InventoryLog, ProductWithStock } from '../../shared/types'
 import { Badge, Card, Select, Spinner } from '../../components/ui'
 import { LedgerTable } from '../../components/LedgerTable'
-import { ReportTable, Segmented, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, Segmented, Td, Th } from './shared'
 
 interface Party {
   id: string
@@ -84,7 +85,14 @@ function PartyLedger({ kind }: { kind: 'customer' | 'supplier' }) {
               </span>
             </div>
           </div>
-          <LedgerTable channel={kind === 'customer' ? 'customers:ledger' : 'suppliers:ledger'} partyId={partyId} />
+          {/* The rows live inside LedgerTable's own query, so the export is rendered there. */}
+          <LedgerTable
+            channel={kind === 'customer' ? 'customers:ledger' : 'suppliers:ledger'}
+            partyId={partyId}
+            exportModule={kind === 'customer' ? 'CustomerLedger' : 'SupplierLedger'}
+            exportScope={selected?.name}
+            exportTitle={kind === 'customer' ? 'Customer Ledger' : 'Supplier Ledger'}
+          />
         </Card>
       )}
     </div>
@@ -139,6 +147,31 @@ function ProductLedger() {
         <Spinner />
       ) : (
         <div className="space-y-3">
+          <ReportExport
+            module="ProductLedger"
+            scope={selected?.name}
+            title="Product Ledger"
+            subtitle={selected?.name}
+            meta={[
+              ['Product', selected?.name ?? ''],
+              ['Current stock', String(selected?.stock ?? '')],
+            ]}
+            sections={[
+              section({
+                columns: [
+                  { header: 'Time', value: (r: (typeof rows)[number]) => formatDateTime(r.created_at) },
+                  { header: 'Type', value: (r) => MOVEMENT_LABELS[r.change_type] ?? r.change_type },
+                  // Signed so a spreadsheet can sum the column.
+                  { header: 'Change', value: (r) => r.quantity_change, align: 'right' },
+                  { header: 'Stock after', value: (r) => r.balance, align: 'right' },
+                  { header: 'Reason', value: (r) => r.reason ?? '' },
+                  { header: 'By', value: (r) => r.created_by_name ?? '' },
+                ],
+                rows,
+              }),
+            ]}
+            note="Newest first (latest 300 shown). “Stock after” is the stock level right after that movement — the top row always matches current stock."
+          />
           <div className="flex items-baseline justify-between">
             <h3 className="font-semibold">{selected?.name}</h3>
             <div className="text-sm text-muted">

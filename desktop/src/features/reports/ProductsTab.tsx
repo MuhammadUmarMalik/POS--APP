@@ -6,7 +6,8 @@ import { formatMoney } from '../../lib/money'
 import { formatDate, rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Card, Spinner } from '../../components/ui'
-import { ReportTable, Segmented, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, Segmented, StatCard, Td, Th } from './shared'
 
 interface ProductSalesRow {
   id: string
@@ -67,16 +68,59 @@ function ProductSalesView({ from, to, best }: { from: string; to: string; best: 
     queryFn: () => api<ProductSalesRow[]>('reports:productSales', rangeFromInputs(from, to)),
   })
   if (isLoading || !data) return <Spinner />
-  if (data.length === 0) return <Card><p className="text-muted">No sales in range.</p></Card>
 
+  // `rows` is what the table shows — best sellers is a top-20 slice, so the
+  // export follows the slice rather than the full result set.
   const rows = best ? [...data].sort((a, b) => b.qty - a.qty).slice(0, 20) : data
   const totals = data.reduce(
     (a, r) => ({ qty: a.qty + r.qty, revenue: a.revenue + r.revenue, profit: a.profit + r.profit }),
     { qty: 0, revenue: 0, profit: 0 }
   )
 
+  const exportBar = (
+    <ReportExport
+      module={best ? 'BestSellersReport' : 'ProductSalesReport'}
+      from={from}
+      to={to}
+      title={best ? 'Best Sellers (top 20 by units sold)' : 'Product Sales Report'}
+      stats={[
+        { label: 'Products sold', value: String(data.length) },
+        { label: 'Units sold', value: String(totals.qty) },
+        { label: 'Revenue', value: formatMoney(totals.revenue, currency) },
+        { label: 'Gross profit', value: formatMoney(totals.profit, currency) },
+      ]}
+      sections={[
+        section({
+          columns: [
+            { header: 'Product', value: (r: ProductSalesRow) => r.name },
+            { header: 'Category', value: (r: ProductSalesRow) => r.category ?? '' },
+            { header: 'Qty sold', value: (r: ProductSalesRow) => r.qty, align: 'right' },
+            { header: 'Returned', value: (r: ProductSalesRow) => r.returned, align: 'right' },
+            { header: 'Revenue', value: (r: ProductSalesRow) => r.revenue, money: true },
+            { header: 'Gross profit', value: (r: ProductSalesRow) => r.profit, money: true },
+          ],
+          rows,
+          footer: best
+            ? undefined
+            : ['Total', '', totals.qty, data.reduce((a, r) => a + r.returned, 0), totals.revenue, totals.profit],
+        }),
+      ]}
+      note="Revenue and gross profit are before returns — refund amounts live in the Returns report."
+    />
+  )
+
+  if (data.length === 0) {
+    return (
+      <div className="space-y-4">
+        {exportBar}
+        <Card><p className="text-muted">No sales in range.</p></Card>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
+      {exportBar}
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Products sold" value={String(data.length)} />
         <StatCard label="Units sold" value={String(totals.qty)} />
@@ -145,6 +189,39 @@ function SlowMoversView({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="SlowMoversReport"
+        from={from}
+        to={to}
+        title="Slow Movers"
+        stats={[
+          { label: 'Slow / unsold products', value: String(data.length) },
+          { label: 'Not sold at all in range', value: String(data.filter((r) => r.qty_sold === 0).length) },
+          { label: 'Cost tied up in unsold stock', value: formatMoney(deadStockValue, currency) },
+        ]}
+        sections={[
+          section({
+            columns: [
+              { header: 'Product', value: (r: SlowMoverRow) => r.name },
+              { header: 'Category', value: (r) => r.category ?? '' },
+              { header: 'Sold in range', value: (r) => r.qty_sold, align: 'right' },
+              { header: 'Stock on hand', value: (r) => r.stock, align: 'right' },
+              { header: 'Stock value (cost)', value: (r) => Math.max(0, r.stock_value), money: true },
+              { header: 'Last sold', value: (r) => (r.last_sold_at ? formatDate(r.last_sold_at) : 'Never') },
+            ],
+            rows: data,
+            footer: [
+              'Total',
+              '',
+              data.reduce((a, r) => a + r.qty_sold, 0),
+              data.reduce((a, r) => a + r.stock, 0),
+              data.reduce((a, r) => a + Math.max(0, r.stock_value), 0),
+              '',
+            ],
+          }),
+        ]}
+        note="Ordered by fewest units sold in the range. “Last sold” looks at all time, not just the range."
+      />
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Slow / unsold products" value={String(data.length)} />
         <StatCard label="Not sold at all in range" value={String(data.filter((r) => r.qty_sold === 0).length)} />
@@ -190,8 +267,37 @@ function CategoryView({ from, to }: { from: string; to: string }) {
   if (data.length === 0) return <Card><p className="text-muted">No sales in range.</p></Card>
 
   const revenueTotal = data.reduce((a, r) => a + r.revenue, 0)
+  const share = (revenue: number) => (revenueTotal > 0 ? `${((revenue / revenueTotal) * 100).toFixed(1)}%` : '')
 
   return (
+    <div className="space-y-4">
+    <ReportExport
+      module="CategorySalesReport"
+      from={from}
+      to={to}
+      title="Sales by Category"
+      sections={[
+        section({
+          columns: [
+            { header: 'Category', value: (r: CategorySalesRow) => r.category },
+            { header: 'Products', value: (r) => r.products, align: 'right' },
+            { header: 'Units sold', value: (r) => r.qty, align: 'right' },
+            { header: 'Revenue', value: (r) => r.revenue, money: true },
+            { header: 'Share', value: (r) => share(r.revenue), align: 'right' },
+            { header: 'Gross profit', value: (r) => r.profit, money: true },
+          ],
+          rows: data,
+          footer: [
+            'Total',
+            data.reduce((a, r) => a + r.products, 0),
+            data.reduce((a, r) => a + r.qty, 0),
+            revenueTotal,
+            revenueTotal > 0 ? '100%' : '',
+            data.reduce((a, r) => a + r.profit, 0),
+          ],
+        }),
+      ]}
+    />
     <ReportTable
       head={
         <>
@@ -210,9 +316,7 @@ function CategoryView({ from, to }: { from: string; to: string }) {
           <Td right className="text-muted">{r.products}</Td>
           <Td right>{r.qty}</Td>
           <Td right className="font-medium">{formatMoney(r.revenue, currency)}</Td>
-          <Td right className="text-muted">
-            {revenueTotal > 0 ? `${((r.revenue / revenueTotal) * 100).toFixed(1)}%` : '—'}
-          </Td>
+          <Td right className="text-muted">{share(r.revenue) || '—'}</Td>
           <Td right className={r.profit >= 0 ? 'text-success' : 'text-danger'}>
             {formatMoney(r.profit, currency)}
           </Td>
@@ -227,5 +331,6 @@ function CategoryView({ from, to }: { from: string; to: string }) {
         <Td right className="font-bold">{formatMoney(data.reduce((a, r) => a + r.profit, 0), currency)}</Td>
       </tr>
     </ReportTable>
+    </div>
   )
 }

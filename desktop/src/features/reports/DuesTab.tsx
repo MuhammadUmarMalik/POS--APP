@@ -5,7 +5,8 @@ import { api } from '../../lib/ipc'
 import { formatMoney } from '../../lib/money'
 import { useCurrency } from '../../stores/auth'
 import { Card, Spinner } from '../../components/ui'
-import { ReportTable, Segmented, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, Segmented, StatCard, Td, Th } from './shared'
 
 interface DuesReport {
   customers: { id: string; name: string; phone: string | null; due_balance: number; credit_limit: number }[]
@@ -44,7 +45,43 @@ function OutstandingView() {
   const supplierTotal = data.suppliers.reduce((a, s) => a + s.due_balance, 0)
 
   return (
-    <div className="grid grid-cols-2 gap-4">
+    <div className="space-y-4">
+      {/* A snapshot, not a range — the balances are whatever they are right now. */}
+      <ReportExport
+        module="OutstandingDues"
+        title="Outstanding Dues"
+        meta={[['Snapshot', new Date().toLocaleString()]]}
+        stats={[
+          { label: 'Customers owe us', value: formatMoney(customerTotal, currency) },
+          { label: 'We owe suppliers', value: formatMoney(supplierTotal, currency) },
+        ]}
+        sections={[
+          section({
+            title: 'Customers owe us',
+            columns: [
+              { header: 'Customer', value: (c: DuesReport['customers'][number]) => c.name },
+              { header: 'Phone', value: (c) => c.phone ?? '' },
+              { header: 'Credit limit', value: (c) => c.credit_limit, money: true },
+              { header: 'Due balance', value: (c) => c.due_balance, money: true },
+            ],
+            rows: data.customers,
+            footer: [`Total (${data.customers.length})`, '', '', customerTotal],
+            emptyText: 'No outstanding customer dues.',
+          }),
+          section({
+            title: 'We owe suppliers',
+            columns: [
+              { header: 'Supplier', value: (s: DuesReport['suppliers'][number]) => s.name },
+              { header: 'Phone', value: (s) => s.phone ?? '' },
+              { header: 'Due balance', value: (s) => s.due_balance, money: true },
+            ],
+            rows: data.suppliers,
+            footer: [`Total (${data.suppliers.length})`, '', supplierTotal],
+            emptyText: 'No outstanding supplier dues.',
+          }),
+        ]}
+      />
+      <div className="grid grid-cols-2 gap-4">
       <Card>
         <h3 className="mb-1 font-semibold">Customers owe us</h3>
         <div className="mb-3 text-2xl font-bold text-danger">{formatMoney(customerTotal, currency)}</div>
@@ -83,6 +120,7 @@ function OutstandingView() {
           </table>
         )}
       </Card>
+      </div>
     </div>
   )
 }
@@ -113,8 +151,44 @@ function AgingView() {
   })
   if (isLoading || !data) return <Spinner />
 
+  const agingSection = (title: string, rows: AgingRow[], totals: AgingReport['customerTotals']) =>
+    section({
+      title,
+      columns: [
+        { header: 'Name', value: (r: AgingRow) => r.name },
+        { header: 'Phone', value: (r) => r.phone ?? '' },
+        { header: '0-30 days', value: (r) => r.b0, money: true },
+        { header: '31-60 days', value: (r) => r.b1, money: true },
+        { header: '61-90 days', value: (r) => r.b2, money: true },
+        { header: 'Over 90 days', value: (r) => r.b3, money: true },
+        { header: 'Total due', value: (r) => r.due_balance, money: true },
+      ],
+      rows,
+      footer: ['Total', '', totals.b0, totals.b1, totals.b2, totals.b3, totals.due],
+      emptyText: 'Nothing outstanding.',
+    })
+
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="DuesAging"
+        title="Dues Aging"
+        meta={[['Snapshot', new Date().toLocaleString()]]}
+        stats={[
+          { label: 'Owed to us — total', value: formatMoney(data.customerTotals.due, currency) },
+          {
+            label: 'Over 30 days old',
+            value: formatMoney(data.customerTotals.b1 + data.customerTotals.b2 + data.customerTotals.b3, currency),
+          },
+          { label: 'Over 90 days old (risky)', value: formatMoney(data.customerTotals.b3, currency) },
+          { label: 'We owe suppliers', value: formatMoney(data.supplierTotals.due, currency) },
+        ]}
+        sections={[
+          agingSection('Customers owe us', data.customers, data.customerTotals),
+          agingSection('We owe suppliers', data.suppliers, data.supplierTotals),
+        ]}
+        note="Payments are assumed to settle the oldest invoices first, so what's still owed sits on the most recent ones. Money in the “over 90 days” column deserves a follow-up call."
+      />
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Owed to us — total" value={formatMoney(data.customerTotals.due, currency)} tone="red" />
         <StatCard label="Over 30 days old" value={formatMoney(data.customerTotals.b1 + data.customerTotals.b2 + data.customerTotals.b3, currency)} />

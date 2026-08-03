@@ -1,7 +1,65 @@
 // Small building blocks shared by the report tabs.
 import type { ReactNode } from 'react'
 import { Card } from '../../components/ui'
+import { ExportBar } from '../../components/ExportBar'
+import { rangeLabel, rangeScope, type AnySection } from '../../lib/export'
 import { cn } from '../../lib/utils'
+
+/**
+ * Print / PDF / CSV control for a report view. Every tab describes its tables
+ * once as ExportSections and all three outputs are derived from that same
+ * description, so the CSV can never disagree with the PDF or the screen.
+ *
+ * Pass the same `from`/`to` the view queried with — the range ends up in the
+ * subtitle, in the filename, and (because the sections hold the already
+ * filtered rows) in the data itself.
+ */
+export function ReportExport({
+  module,
+  from,
+  to,
+  scope: scopeProp,
+  subtitle: subtitleProp,
+  title,
+  meta,
+  stats,
+  sections,
+  note,
+}: {
+  module: string
+  from?: string
+  to?: string
+  /** Filename qualifier for reports with no date range — a party or product name. */
+  scope?: string
+  subtitle?: string
+  title: string
+  meta?: [string, string][]
+  stats?: { label: string; value: string }[]
+  sections: AnySection[]
+  note?: string
+}) {
+  const ranged = from != null && to != null
+  const scope = scopeProp ?? (ranged ? rangeScope(from, to) : undefined)
+  return (
+    <div className="no-print flex justify-end">
+      <ExportBar
+        module={module}
+        scope={scope}
+        csv
+        buildDoc={() => ({
+          module,
+          scope,
+          title,
+          subtitle: subtitleProp ?? (ranged ? rangeLabel(from, to) : undefined),
+          meta,
+          stats,
+          sections,
+          note,
+        })}
+      />
+    </div>
+  )
+}
 
 export function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'green' | 'red' }) {
   return (

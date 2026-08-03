@@ -5,7 +5,8 @@ import { formatMoney } from '../../lib/money'
 import { rangeFromInputs } from '../../lib/utils'
 import { useCurrency } from '../../stores/auth'
 import { Card, Spinner } from '../../components/ui'
-import { ReportTable, StatCard, Td, Th } from './shared'
+import { section } from '../../lib/export'
+import { ReportExport, ReportTable, StatCard, Td, Th } from './shared'
 
 interface PurchaseReport {
   totals: { count: number; total: number; paid: number; due: number }
@@ -23,6 +24,37 @@ export function PurchasesTab({ from, to }: { from: string; to: string }) {
 
   return (
     <div className="space-y-4">
+      <ReportExport
+        module="PurchasesReport"
+        from={from}
+        to={to}
+        title="Purchases Report"
+        stats={[
+          { label: 'Purchases', value: String(data.totals.count) },
+          { label: 'Total purchased', value: formatMoney(data.totals.total, currency) },
+          { label: 'Paid', value: formatMoney(data.totals.paid, currency) },
+          { label: 'Bought on credit', value: formatMoney(data.totals.due, currency) },
+        ]}
+        sections={[
+          section({
+            title: 'By supplier',
+            columns: [
+              { header: 'Supplier', value: (s: PurchaseReport['bySupplier'][number]) => s.supplier },
+              { header: 'Purchases', value: (s) => s.count, align: 'right' },
+              { header: 'Total', value: (s) => s.total, money: true },
+              { header: 'Paid', value: (s) => s.paid, money: true },
+              { header: 'On credit', value: (s) => s.total - s.paid, money: true },
+            ],
+            rows: data.bySupplier,
+            footer: ['Total', data.totals.count, data.totals.total, data.totals.paid, data.totals.due],
+          }),
+        ]}
+        note={
+          data.returns.count > 0
+            ? `${data.returns.count} purchase return(s) in this range worth ${formatMoney(data.returns.total, currency)} — see the Returns report.`
+            : undefined
+        }
+      />
       <div className="grid grid-cols-4 gap-4">
         <StatCard label="Purchases" value={String(data.totals.count)} />
         <StatCard label="Total purchased" value={formatMoney(data.totals.total, currency)} />
